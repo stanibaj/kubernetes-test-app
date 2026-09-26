@@ -1,0 +1,51 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this repo is
+
+A learning project: a trivial Redis-backed job queue (producer + workers) used to watch Kubernetes scale workers based on queue length. **`spec.md` is the source of truth** for requirements, Redis data model, env vars, API, experiments, and the final repo layout. Read the relevant section before implementing anything.
+
+The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manual scaling, 3b: KEDA autoscaling, 4: GKE). As of this writing, no stage has been implemented yet; the repo holds only `README.md` and `spec.md`.
+
+## Working agreement (from spec.md §1 — follow strictly)
+
+- **One stage at a time.** Implement only the stage the user asks for, and never create files that belong to later stages (no Dockerfiles in Stage 1, no k8s manifests in Stage 2, etc.). Stage 3 is split: do 3a, stop, then 3b only when asked.
+- **Stop at the end of each stage** so the user can run and verify it.
+- **Write `docs/stage-N.md`** (`stage-3a.md` / `stage-3b.md` for Stage 3) at the end of each stage: what was built, concepts, why each change was needed, and how to run the experiments. The user is learning, so explain as you go. When a later stage changes earlier code, explain why.
+- **Inspect before creating.** Don't overwrite or delete existing files without asking; mention conflicts.
+- **Never create cloud resources or run commands that cost money.** For GKE, write the `gcloud` commands in the docs for the user to run.
+- Keep code simple, readable, and commented.
+
+## Architecture boundaries
+
+- `app/` = plain application code (producer, worker, `tools/local_scaler.py`, tests). It must know nothing about Docker or Kubernetes. All config comes from environment variables with local defaults.
+- `deploy/` = everything for packaging/running: `docker/` (Dockerfiles, built with the **repo root** as context), `compose/`, `k8s/` (Kustomize `base/` + `overlays/` for `k3s`, `pending-demo`, `scaledobject`, `gke`), `scripts/`.
+- Rule of thumb: if a file still makes sense with no containers or Kubernetes, it belongs in `app/`.
+- The k8s base must stay platform-neutral. Use the standard `Ingress` with a configurable `ingressClassName` and no Traefik CRDs. Anything k3s- or GKE-specific goes in its overlay.
+
+## Key design invariants (easy to break)
+
+- **One worker processes exactly one job at a time.** The worker pops the job from `jobs:queue` when it starts, so the list length excludes in-progress jobs. This matters for the KEDA `scalingStrategy` choice in 3b (check the KEDA docs for the pinned version).
+- Worker modes: `WORKER_MODE=once` (one job then exit; an empty queue exits 0) is used by the local scaler and KEDA ScaledJob. `loop` (BLPOP with timeout) is used by Compose, the k8s Deployment, and ScaledObject.
+- On SIGTERM/SIGINT mid-job, the worker requeues the job, cleans up `jobs:processing`, and exits. It must work as PID 1 in a container. The k8s `terminationGracePeriodSeconds` must exceed the longest job.
+- Exit code is 0 for all expected outcomes, including simulated failures. Non-zero is only for real errors such as Redis being unreachable.
+- Logs are single lines on stdout that include the worker ID and job ID.
+- The producer web page is a single HTML file with inline CSS/JS, no build step, and no external assets.
+
+## Stack and commands
+
+Python 3.12, redis-py, FastAPI + uvicorn (producer only; no other frameworks), Redis 7, pytest + fakeredis. There's a virtualenv and a `requirements.txt` per component (`app/producer/`, `app/worker/`), with tests in each component's `tests/` directory.
+
+Once they exist:
+- Tests: `pytest app/`. For a single test: `pytest app/worker/tests/test_worker.py::test_name`.
+- Root `Makefile` (Stage 2+): `build`, `push`, `up`, `down`, `test`, with images parameterized by `REGISTRY` and `TAG`. Stage 3b adds `install-keda`, `deploy`, `deploy-pending-demo`, `undeploy`, `watch`, `logs-worker`.
+
+## Target environments
+
+- k3s: self-managed on 3 GCE VMs (1 server, 2 agents), linux/amd64, with Traefik available. Artifact Registry pulls need an `imagePullSecret` or k3s `registries.yaml`.
+- GKE Standard with node-pool autoscaling (Stage 4).
+
+## Non-goals
+
+No auth, persistent Redis, HA, Prometheus/Grafana, or automated cloud provisioning.
