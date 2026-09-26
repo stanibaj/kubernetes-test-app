@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Queue Worker Demo</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #6b7385; --border: #dfe3ea; --accent: #2f6fed; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171d; --card: #1d2129; --text: #e6e9ef; --muted: #98a0b0; --border: #2e3440; --accent: #6a9bff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  main { max-width: 1000px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 8px 0 16px; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+  form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  input[type=number] { width: 80px; }
+  input, button { font: inherit; padding: 5px 8px; border-radius: 5px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { margin-left: auto; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .tile { border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+  .tile .n { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .host { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; color: #fff; }
+  .empty { color: var(--muted); }
+  .r-completed { color: #2a9d55; } .r-failed { color: #d98a00; } .r-dead { color: #d64545; }
+  #error { color: #d64545; min-height: 1.4em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Queue Worker Demo</h1>
+
+  <section>
+    <h2>Submit jobs</h2>
+    <form id="submit">
+      <label>Count <input type="number" id="count" min="1" max="200" value="5"></label>
+      <label><input type="radio" name="dur" value="fixed" checked> Fixed
+        <input type="number" id="duration" min="1" value="30"> s</label>
+      <label><input type="radio" name="dur" value="random"> Random (10–60 s)</label>
+      <button class="primary" type="submit">Submit</button>
+      <button class="danger" type="button" id="reset">Reset</button>
+    </form>
+    <div id="error"></div>
+  </section>
+
+  <section>
+    <div class="tiles">
+      <div class="tile"><div class="n" id="t-queue">–</div><div class="l">Waiting</div></div>
+      <div class="tile"><div class="n" id="t-processing">–</div><div class="l">Processing</div></div>
+      <div class="tile"><div class="n" id="t-completed">–</div><div class="l">Completed</div></div>
+      <div class="tile"><div class="n" id="t-failed">–</div><div class="l">Failed attempts</div></div>
+      <div class="tile"><div class="n" id="t-dead">–</div><div class="l">Dead-lettered</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Processing now</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Host</th><th>Worker</th><th>Job</th><th>Running for</th></tr></thead>
+      <tbody id="processing"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Recent history</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Finished</th><th>Result</th><th>Host</th><th>Worker</th><th>Job</th><th>Took</th></tr></thead>
+      <tbody id="history"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// Each host gets a stable color derived from its name, so you can see where work runs.
+function hostColor(host) {
+  let h = 0;
+  for (const ch of host) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return `hsl(${h % 360} 55% 45%)`;
+}
+const hostBadge = (host) => `<span class="host" style="background:${hostColor(host)}">${esc(host)}</span>`;
+const secondsSince = (iso) => Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+
+function render(s) {
+  $("t-queue").textContent = s.queue_length;
+  $("t-processing").textContent = s.processing.length;
+  $("t-completed").textContent = s.completed;
+  $("t-failed").textContent = s.failed;
+  $("t-dead").textContent = s.dead;
+
+  // Group processing rows by host.
+  const rows = [...s.processing].sort((a, b) => a.host.localeCompare(b.host) || a.started_at.localeCompare(b.started_at));
+  $("processing").innerHTML = rows.length
+    ? rows.map((j) => `<tr><td>${hostBadge(j.host)}</td><td>${esc(j.worker)}</td><td>${esc(j.id.slice(0, 8))}</td><td>${secondsSince(j.started_at)} s</td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">No jobs in progress</td></tr>`;
+
+  $("history").innerHTML = s.history.length
+    ? s.history.map((h) => {
+        const took = Math.round((new Date(h.finished_at) - new Date(h.started_at)) / 1000);
+        return `<tr><td>${new Date(h.finished_at).toLocaleTimeString()}</td><td class="r-${esc(h.result)}">${esc(h.result)}</td>` +
+               `<td>${hostBadge(h.host)}</td><td>${esc(h.worker)}</td><td>${esc(h.id.slice(0, 8))}</td><td>${took} s</td></tr>`;
+      }).join("")
+    : `<tr><td colspan="6" class="empty">Nothing finished yet</td></tr>`;
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/status");
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    render(await res.json());
+    $("error").textContent = "";
+  } catch (e) {
+    $("error").textContent = `Cannot load status: ${e.message}`;
+  }
+}
+
+$("submit").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const random = document.querySelector('input[name="dur"]:checked').value === "random";
+  const body = { count: Number($("count").value), duration_seconds: random ? "random" : Number($("duration").value) };
+  const res = await fetch("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  $("error").textContent = res.ok ? "" : `Submit failed: ${await res.text()}`;
+  refresh();
+});
+
+$("reset").addEventListener("click", async () => {
+  if (!confirm("Delete all jobs, counters and history?")) return;
+  await fetch("/api/reset", { method: "POST" });
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

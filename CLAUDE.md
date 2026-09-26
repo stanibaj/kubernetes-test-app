@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A learning project: a trivial Redis-backed job queue (producer + workers) used to watch Kubernetes scale workers based on queue length. **`spec.md` is the source of truth** for requirements, Redis data model, env vars, API, experiments, and the final repo layout. Read the relevant section before implementing anything.
 
-The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manual scaling, 3b: KEDA autoscaling, 4: GKE). As of this writing, no stage has been implemented yet; the repo holds only `README.md` and `spec.md`.
+The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manual scaling, 3b: KEDA autoscaling, 4: GKE). **Stage 1 is implemented** (see `docs/stage-1.md`); nothing from later stages exists yet.
 
 ## Working agreement (from spec.md §1 — follow strictly)
 
@@ -33,13 +33,28 @@ The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manu
 - Logs are single lines on stdout that include the worker ID and job ID.
 - The producer web page is a single HTML file with inline CSS/JS, no build step, and no external assets.
 
+## Host network rule
+
+On this host **nothing may bind to `0.0.0.0`**, only to the Tailscale IP (`tailscale ip -4`). That means `HOST=$TS_IP` for the producer, `REDIS_HOST=$TS_IP`, and `podman run -p $TS_IP:6379:6379 …`, never a bare `-p 6379:6379`. Code defaults must never be `0.0.0.0`; the producer's `HOST` defaults to `127.0.0.1`. Apply the same rule to Compose `ports:`, published container ports, and any port-forward (`kubectl port-forward --address $TS_IP`) in later stages. Check with `ss -ltn`.
+
 ## Stack and commands
 
-Python 3.12, redis-py, FastAPI + uvicorn (producer only; no other frameworks), Redis 7, pytest + fakeredis. There's a virtualenv and a `requirements.txt` per component (`app/producer/`, `app/worker/`), with tests in each component's `tests/` directory.
+Python 3.12, redis-py, FastAPI + uvicorn (producer only; no other frameworks), Redis 7, pytest + fakeredis. Pinned versions are in each component's `requirements.txt`. For local development, one root `.venv` is built from `requirements-dev.txt`, which includes both components plus the test tools. Docker is not installed here, and Podman needs fully qualified image names.
 
-Once they exist:
-- Tests: `pytest app/`. For a single test: `pytest app/worker/tests/test_worker.py::test_name`.
-- Root `Makefile` (Stage 2+): `build`, `push`, `up`, `down`, `test`, with images parameterized by `REGISTRY` and `TAG`. Stage 3b adds `install-keda`, `deploy`, `deploy-pending-demo`, `undeploy`, `watch`, `logs-worker`.
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest                                          # all tests (pytest.ini sets pythonpath)
+.venv/bin/pytest app/worker/tests/test_worker.py::test_history_is_capped
+export TS_IP=$(tailscale ip -4) REDIS_HOST=$(tailscale ip -4) HOST=$(tailscale ip -4)
+podman run --rm --name redis -p $TS_IP:6379:6379 docker.io/library/redis:7
+python app/producer/app.py                                # http://$HOST:8000
+python app/worker/worker.py                               # WORKER_MODE=loop by default
+python app/tools/local_scaler.py --max 5                  # starts once-workers from LLEN
+```
+
+Components are script directories, not packages. Tests import `app`, `worker` and `local_scaler` directly via `pytest.ini`'s `pythonpath`. The producer's Redis client is injected through the `get_redis` dependency, and tests override it with fakeredis. `process_job` takes injectable `sleep`/`rand`. `fakeredis.TcpFakeServer` can stand in for a real Redis in end-to-end smoke tests.
+
+Planned Makefile targets (Stage 2+): `build`, `push`, `up`, `down`, `test`, with images parameterized by `REGISTRY` and `TAG`. Stage 3b adds `install-keda`, `deploy`, `deploy-pending-demo`, `undeploy`, `watch`, `logs-worker`.
 
 ## Target environments
 

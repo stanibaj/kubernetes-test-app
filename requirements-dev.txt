@@ -1,0 +1,7 @@
+# Local development: everything needed to run all components and the tests
+# from one virtual environment.
+-r app/producer/requirements.txt
+-r app/worker/requirements.txt
+pytest==9.1.1
+fakeredis==2.38.0
+httpx2==2.13.1
