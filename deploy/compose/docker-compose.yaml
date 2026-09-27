@@ -1,0 +1,65 @@
+# Runs Redis, the producer and the worker (loop mode) together.
+# Use via the Makefile (`make up` / `make down`), or directly:
+#   TS_IP=$(tailscale ip -4) podman compose -p kubernetes-test-app -f deploy/compose/docker-compose.yaml up -d
+#
+# Services find each other by name on the compose network: the producer and
+# worker connect to Redis at host "redis".
+
+services:
+  redis:
+    image: docker.io/library/redis:7
+    # No `ports:` on purpose: Redis is only reachable from inside the
+    # compose network, never from the host or the outside world.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  producer:
+    build:
+      context: ../..                      # repository root
+      dockerfile: deploy/docker/producer.Dockerfile
+    image: ${REGISTRY:-localhost}/kubernetes-test-app-producer:${TAG:-dev}
+    environment:
+      REDIS_HOST: redis
+    ports:
+      # Publish ONLY on the Tailscale IP (host rule: never 0.0.0.0).
+      # PRODUCER_PORT picks the host port (default 8000); the container
+      # always listens on 8000.
+      - "${TS_IP:?set TS_IP to the Tailscale IP}:${PRODUCER_PORT:-8000}:8000"
+    depends_on:
+      - redis
+    dns_opt: &fast_dns
+      # When the redis container is stopped, its name stops resolving and
+      # each failed DNS lookup would take ~10 s (glibc default 5 s x 2
+      # attempts), making /readyz very slow to say "not ready". The only
+      # name we look up is "redis", so a 1 s timeout is plenty.
+      - timeout:1
+      - attempts:1
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/worker.Dockerfile
+    image: ${REGISTRY:-localhost}/kubernetes-test-app-worker:${TAG:-dev}
+    # How many worker containers to run (manual scaling). We use
+    # deploy.replicas instead of `up --scale worker=N` because podman-compose
+    # 1.0.6 accepts --scale but ignores it. No container_name, so copies can
+    # get distinct names (..._worker_1, _2, ...).
+    deploy:
+      replicas: ${WORKERS:-1}
+    environment:
+      REDIS_HOST: redis
+      WORKER_MODE: loop
+      FAIL_RATE: ${FAIL_RATE:-0.0}
+    depends_on:
+      - redis
+    dns_opt: *fast_dns
+    # The worker exits 1 if Redis is unreachable (e.g. it started before
+    # Redis was up); restart it in that case. Normal exits (0) stay stopped.
+    restart: on-failure
+    # How long `stop` waits after SIGTERM before SIGKILL. Our worker requeues
+    # and exits right away, but this previews Kubernetes'
+    # terminationGracePeriodSeconds (must exceed the longest job).
+    stop_grace_period: 90s

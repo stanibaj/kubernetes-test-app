@@ -14,8 +14,10 @@ from typing import Literal
 
 import redis
 import uvicorn
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 from fastapi import Depends, FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, PositiveInt
 
 # Configuration from environment variables (same defaults as the worker).
@@ -42,7 +44,12 @@ INDEX_HTML = Path(__file__).parent / "static" / "index.html"
 
 app = FastAPI(title="kubernetes-test-app producer")
 
-_redis = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+# Fail fast when Redis is down: short timeouts and a single quick retry
+# (redis-py's default is 10 retries with backoff). A web request, and
+# especially /readyz, should answer "not ready" within seconds, not hang.
+_redis = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True,
+                     socket_connect_timeout=2, socket_timeout=2,
+                     retry=Retry(NoBackoff(), retries=1))
 
 
 def get_redis() -> redis.Redis:
@@ -58,6 +65,25 @@ class JobRequest(BaseModel):
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(INDEX_HTML)
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    # Liveness: "is this process alive and able to answer HTTP?"
+    # Deliberately does NOT touch Redis: a Redis outage is not fixed by
+    # restarting the producer.
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz(r: redis.Redis = Depends(get_redis)):
+    # Readiness: "can this instance do useful work right now?"
+    # Only when Redis answers PING; otherwise 503 so traffic is held back.
+    try:
+        r.ping()
+    except redis.RedisError as exc:
+        return JSONResponse(status_code=503, content={"status": "not ready", "error": str(exc)})
+    return {"status": "ready"}
 
 
 @app.post("/api/jobs")
