@@ -1,0 +1,36 @@
+# Values for the self-managed k3s cluster (gcp-srv-02 server, gcp-srv-03/04
+# agents, GCP project dns-chatbot-sb, us-central1-a). Layered over the
+# chart's values.yaml:
+#   helm upgrade --install kubernetes-test-app deploy/helm/kubernetes-test-app \
+#     -n kubernetes-test-app --create-namespace -f deploy/helm/values/k3s.yaml
+
+image:
+  # Artifact Registry repo in the same region as the VMs (free same-region
+  # pulls). Push with:
+  #   make build push REGISTRY=us-central1-docker.pkg.dev/dns-chatbot-sb/kubernetes-test-app TAG=<tag>
+  registry: us-central1-docker.pkg.dev/dns-chatbot-sb/kubernetes-test-app
+  # Tag of the pushed images. A unique, never-reused tag (a version or a git
+  # SHA) so every node runs the same code. Update after pushing new images, or
+  # override: --set image.tag=<tag>
+  #   1f98a56: first deploy (worker crash-looped: Redis read timeout, see docs/stage-3a.md)
+  #   0.2.0:   worker read timeout fixed
+  tag: "0.2.0"
+
+# k3s nodes can't authenticate to Artifact Registry on their own. This
+# secret (a read-only service-account key) is created by hand in the
+# namespace; see docs/stage-3a.md "Image pulls".
+imagePullSecrets:
+  - name: artifact-registry
+
+producer:
+  ingress:
+    enabled: true
+    # k3s ships Traefik as its ingress controller, with IngressClass "traefik".
+    className: traefik
+    # The server's Tailscale MagicDNS name. Traefik listens on every node,
+    # but the GCP firewall (deny-ingress-tailscale-only) drops all traffic
+    # to the nodes' public IPs, so this is reachable only over the tailnet.
+    host: gcp-srv-02.beefalo-fort.ts.net
+
+worker:
+  replicas: 8

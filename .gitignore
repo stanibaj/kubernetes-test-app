@@ -1,3 +1,5 @@
 .venv/
 __pycache__/
 .pytest_cache/
+# Never commit credentials (e.g. the Artifact Registry service-account key).
+*key*.json

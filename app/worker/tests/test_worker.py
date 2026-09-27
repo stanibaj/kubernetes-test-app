@@ -2,6 +2,7 @@ import json
 
 import fakeredis
 import pytest
+import redis
 
 import worker
 from worker import Config, ShutdownRequested, process_job, run_once
@@ -116,3 +117,22 @@ def test_main_returns_1_when_redis_unreachable(monkeypatch):
     monkeypatch.setenv("WORKER_MODE", "once")
     monkeypatch.setattr(worker, "install_signal_handlers", lambda: None)
     assert worker.main() == 1
+
+
+def test_socket_timeout_is_longer_than_blpop_timeout(cfg):
+    # Otherwise an empty-queue BLPOP reply (sent after BLPOP_TIMEOUT) can
+    # arrive after the client has already given up (seen on k3s, Stage 3a).
+    client = worker.connect(cfg)
+    assert client.connection_pool.connection_kwargs["socket_timeout"] > worker.BLPOP_TIMEOUT
+
+
+def test_main_returns_1_when_redis_times_out(monkeypatch, capsys):
+    class SilentRedis:
+        def lpop(self, _queue):
+            raise redis.TimeoutError("Timeout reading from socket")
+
+    monkeypatch.setenv("WORKER_MODE", "once")
+    monkeypatch.setattr(worker, "install_signal_handlers", lambda: None)
+    monkeypatch.setattr(worker, "connect", lambda _cfg: SilentRedis())
+    assert worker.main() == 1
+    assert "cannot reach Redis" in capsys.readouterr().out

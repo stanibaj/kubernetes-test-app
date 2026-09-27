@@ -1,0 +1,92 @@
+# Default values for the kubernetes-test-app chart.
+#
+# Every setting the templates use is listed here with a safe default.
+# Environments override only what differs, in their own file under
+# deploy/helm/values/ (e.g. k3s.yaml), layered with -f:
+#   helm upgrade --install kubernetes-test-app deploy/helm/kubernetes-test-app \
+#     -n kubernetes-test-app --create-namespace -f deploy/helm/values/k3s.yaml
+# Later -f files and --set flags override earlier ones.
+
+# Our own images (producer and worker) are "<registry>/<repository>:<tag>".
+image:
+  # Registry prefix. "localhost" matches the local Podman builds from Stage 2
+  # (`make build`); a real cluster needs a registry it can pull from.
+  registry: localhost
+  # Image tag for both images. Empty = the chart's appVersion (Chart.yaml).
+  # Prefer a unique tag such as the git SHA: nodes cache images by tag.
+  tag: ""
+  # IfNotPresent: pull only if the node doesn't have this tag yet.
+  pullPolicy: IfNotPresent
+
+# Secrets with registry credentials, added to every pod, e.g.
+#   imagePullSecrets:
+#     - name: artifact-registry
+# The chart does NOT create these secrets (they hold credentials, which do
+# not belong in a values file); create them with kubectl first.
+imagePullSecrets: []
+
+# Application configuration, rendered into the "app-config" ConfigMap and
+# passed to the producer and workers as environment variables.
+# Changing any of these rolls the pods on `helm upgrade` (checksum/config).
+config:
+  # Redis list holding waiting jobs (QUEUE_NAME).
+  queueName: "jobs:queue"
+  # Probability 0.0-1.0 that a job fails (FAIL_RATE).
+  failRate: "0.0"
+  # Attempts before a job goes to the dead-letter list (MAX_ATTEMPTS).
+  maxAttempts: 3
+
+redis:
+  # Full image reference: Redis comes from Docker Hub, not our registry.
+  image: docker.io/library/redis:7
+  # Every container gets requests (what the scheduler reserves on a node) and
+  # limits (the most it may use: CPU is throttled, memory over the limit is
+  # OOM-killed).
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+producer:
+  image:
+    repository: kubernetes-test-app-producer
+  replicas: 1
+  service:
+    # Port of the ClusterIP Service (the container always listens on 8000).
+    port: 8000
+  ingress:
+    # Off by default: an Ingress needs an ingress controller, and exposing
+    # the page is an environment decision.
+    enabled: false
+    # Which ingress controller handles it (e.g. "traefik" on k3s).
+    # Empty = the cluster's default IngressClass.
+    className: ""
+    # Host name to match. Empty = any host.
+    host: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 192Mi
+
+worker:
+  image:
+    repository: kubernetes-test-app-worker
+  # Number of worker pods (manual scaling). 0 is allowed: jobs just wait.
+  replicas: 1
+  # How long Kubernetes waits after SIGTERM before SIGKILL. Must be longer
+  # than the longest job (60 s): the worker requeues its job on SIGTERM and
+  # exits within a second, so this is a generous upper bound.
+  terminationGracePeriodSeconds: 90
+  resources:
+    requests:
+      cpu: 250m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 64Mi

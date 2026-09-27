@@ -1,0 +1,104 @@
+# Producer: the web page and API. Deployment + ClusterIP Service, plus an
+# Ingress when producer.ingress.enabled is true.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: producer
+  labels:
+    {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "producer") | nindent 4 }}
+spec:
+  replicas: {{ .Values.producer.replicas }}
+  selector:
+    matchLabels:
+      {{- include "kubernetes-test-app.selectorLabels" (dict "ctx" $ "component" "producer") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "producer") | nindent 8 }}
+      annotations:
+        {{- include "kubernetes-test-app.configChecksum" . | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "kubernetes-test-app.podSecurityContext" 10001 | nindent 8 }}
+      containers:
+        - name: producer
+          image: {{ include "kubernetes-test-app.image" (dict "ctx" $ "repository" .Values.producer.image.repository) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # REDIS_HOST, QUEUE_NAME, ... from the ConfigMap. HOST=0.0.0.0 and
+          # PORT=8000 come from the image (all interfaces of the POD).
+          envFrom:
+            - configMapRef:
+                name: app-config
+          ports:
+            - name: http
+              containerPort: 8000
+          # Readiness: only send traffic while Redis answers (/readyz).
+          # The app gives up on Redis after ~2 s, so allow 3 s.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+          # Liveness: restart only if the process itself stops answering.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.producer.resources | nindent 12 }}
+          securityContext:
+            {{- include "kubernetes-test-app.containerSecurityContext" . | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: producer
+  labels:
+    {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "producer") | nindent 4 }}
+spec:
+  # ClusterIP only: nothing is published on the nodes. Reach it through the
+  # Ingress or `kubectl port-forward`.
+  type: ClusterIP
+  selector:
+    {{- include "kubernetes-test-app.selectorLabels" (dict "ctx" $ "component" "producer") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.producer.service.port }}
+      targetPort: http
+{{- if .Values.producer.ingress.enabled }}
+---
+# Standard Ingress (no controller-specific CRDs or annotations), so the same
+# template works with Traefik on k3s and other controllers elsewhere.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: producer
+  labels:
+    {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "producer") | nindent 4 }}
+spec:
+  {{- with .Values.producer.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: producer
+                port:
+                  name: http
+      {{- /* No host = the rule matches requests for any host name. */}}
+      {{- with .Values.producer.ingress.host }}
+      host: {{ . | quote }}
+      {{- end }}
+{{- end }}
