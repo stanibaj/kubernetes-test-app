@@ -20,9 +20,9 @@ The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manu
 ## Architecture boundaries
 
 - `app/` = plain application code (producer, worker, `tools/local_scaler.py`, tests). It must know nothing about Docker or Kubernetes. All config comes from environment variables with local defaults.
-- `deploy/` = everything for packaging/running: `docker/` (Dockerfiles, built with the **repo root** as context), `compose/`, `k8s/` (Kustomize `base/` + `overlays/` for `k3s`, `pending-demo`, `scaledobject`, `gke`), `scripts/`.
+- `deploy/` = everything for packaging/running: `docker/` (Dockerfiles, built with the **repo root** as context), `compose/`, `helm/` (the `kubernetes-test-app/` chart + `values/` files for `k3s`, `pending-demo`, `scaledobject`, `gke`, layered with multiple `-f`), `scripts/`.
 - Rule of thumb: if a file still makes sense with no containers or Kubernetes, it belongs in `app/`.
-- The k8s base must stay platform-neutral. Use the standard `Ingress` with a configurable `ingressClassName` and no Traefik CRDs. Anything k3s- or GKE-specific goes in its overlay.
+- The chart templates must stay platform-neutral. Use the standard `Ingress` with a configurable `ingressClassName` and no Traefik CRDs. Anything k3s- or GKE-specific is a value set in that environment's values file. The chart never installs KEDA CRDs and renders KEDA resources only when `worker.mode` selects them. The namespace comes from `--create-namespace`, not a template.
 
 ## Key design invariants (easy to break)
 
@@ -54,7 +54,7 @@ python app/tools/local_scaler.py --max 5                  # starts once-workers 
 
 Components are script directories, not packages. Tests import `app`, `worker` and `local_scaler` directly via `pytest.ini`'s `pythonpath`. The producer's Redis client is injected through the `get_redis` dependency, and tests override it with fakeredis. `process_job` takes injectable `sleep`/`rand`. `fakeredis.TcpFakeServer` can stand in for a real Redis in end-to-end smoke tests.
 
-Planned Makefile targets (Stage 2+): `build`, `push`, `up`, `down`, `test`, with images parameterized by `REGISTRY` and `TAG`. Stage 3b adds `install-keda`, `deploy`, `deploy-pending-demo`, `undeploy`, `watch`, `logs-worker`.
+Planned Makefile targets (Stage 2+): `build`, `push`, `up`, `down`, `test`, with images parameterized by `REGISTRY` and `TAG`. Stage 3b adds `install-keda`, `deploy`, `deploy-pending-demo`, `undeploy`, `watch`, `logs-worker` (deploy = `helm upgrade --install`, undeploy = `helm uninstall`). Neither `helm` nor `kubectl` is installed on this host, so the user runs them against the cluster.
 
 ## Target environments
 
