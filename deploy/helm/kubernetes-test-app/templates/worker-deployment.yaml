@@ -1,0 +1,58 @@
+# Workers in loop mode, scaled by hand: the replica count comes from
+# worker.replicas (or `kubectl scale`, until the next `helm upgrade`).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "worker") | nindent 4 }}
+spec:
+  # Rendered as-is (no `default`), so worker.replicas=0 really means 0.
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "kubernetes-test-app.selectorLabels" (dict "ctx" $ "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "worker") | nindent 8 }}
+      annotations:
+        {{- include "kubernetes-test-app.configChecksum" . | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      # On delete/scale-down: SIGTERM, then up to this long before SIGKILL.
+      # The worker requeues its current job on SIGTERM and exits.
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "kubernetes-test-app.podSecurityContext" 10001 | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "kubernetes-test-app.image" (dict "ctx" $ "repository" .Values.worker.image.repository) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: app-config
+          env:
+            - name: WORKER_MODE
+              value: loop
+            # Downward API: Kubernetes fills these in from the pod's own
+            # metadata, so logs and the status page show which pod did a
+            # job, and on which node it ran.
+            - name: WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: HOST_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          # No probes: the worker serves no HTTP. If it crashes (exit 1,
+          # e.g. Redis unreachable), the kubelet restarts it.
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            {{- include "kubernetes-test-app.containerSecurityContext" . | nindent 12 }}

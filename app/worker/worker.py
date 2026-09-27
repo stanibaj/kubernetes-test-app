@@ -30,6 +30,11 @@ HISTORY_LIMIT = 50
 
 PROGRESS_INTERVAL = 5  # seconds between progress log lines
 BLPOP_TIMEOUT = 5  # seconds to wait for a job in loop mode before checking again
+# How long the client waits for ANY reply from Redis. It must be clearly longer
+# than BLPOP_TIMEOUT: on an empty queue Redis answers a BLPOP only after the
+# full BLPOP_TIMEOUT, plus network time. redis-py 8's default is also 5 s, so
+# with pods on different k3s nodes the client gave up just before the reply.
+SOCKET_TIMEOUT = BLPOP_TIMEOUT + 5
 
 
 class ShutdownRequested(Exception):
@@ -177,10 +182,16 @@ def install_signal_handlers() -> None:
     signal.signal(signal.SIGINT, handler)
 
 
+def connect(cfg: Config) -> redis.Redis:
+    # The client connects lazily, on the first command.
+    return redis.Redis(host=cfg.redis_host, port=cfg.redis_port, decode_responses=True,
+                       socket_timeout=SOCKET_TIMEOUT)
+
+
 def main() -> int:
     cfg = Config.from_env()
     install_signal_handlers()
-    r = redis.Redis(host=cfg.redis_host, port=cfg.redis_port, decode_responses=True)
+    r = connect(cfg)
     try:
         if cfg.mode == "once":
             run_once(r, cfg)
@@ -188,8 +199,9 @@ def main() -> int:
             run_loop(r, cfg)
     except ShutdownRequested as exc:
         log(cfg, f"received {exc}, exiting")
-    except redis.ConnectionError as exc:
-        # A real error: exit non-zero.
+    except (redis.ConnectionError, redis.TimeoutError) as exc:
+        # A real error (Redis down, or not answering even after redis-py's
+        # own retries): exit non-zero.
         log(cfg, f"cannot reach Redis at {cfg.redis_host}:{cfg.redis_port}: {exc}")
         return 1
     return 0

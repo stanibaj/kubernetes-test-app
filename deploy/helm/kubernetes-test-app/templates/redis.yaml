@@ -1,0 +1,79 @@
+# Redis: the job queue and status store. One pod, no persistence (a non-goal):
+# data lives in an emptyDir volume and is lost when the pod is replaced.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "redis") | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate = stop the old pod before starting the new one. The default
+  # RollingUpdate would briefly run two independent (empty vs full) Redis
+  # instances behind the same Service, splitting the queue between them.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "kubernetes-test-app.selectorLabels" (dict "ctx" $ "component" "redis") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "redis") | nindent 8 }}
+    spec:
+      # Don't inject docker-link-style variables such as REDIS_PORT=tcp://...
+      # for every Service in the namespace (see docs/stage-3a.md).
+      enableServiceLinks: false
+      # UID/GID 999 is the "redis" user in the official image. Starting as
+      # that user (not root) makes the image's entrypoint skip its
+      # chown-and-switch-user step, which would need root.
+      securityContext:
+        {{- include "kubernetes-test-app.podSecurityContext" 999 | nindent 8 }}
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          imagePullPolicy: IfNotPresent
+          # No snapshots, no append-only file: nothing is written to disk
+          # except what Redis may need in its working dir (/data).
+          args: ["redis-server", "--save", "", "--appendonly", "no"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          # Redis has no HTTP endpoint, so the probes run a command inside
+          # the container instead.
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          securityContext:
+            {{- include "kubernetes-test-app.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+# ClusterIP Service: a stable virtual IP and the DNS name "redis" inside the
+# namespace. Reachable only from inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "redis") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "kubernetes-test-app.selectorLabels" (dict "ctx" $ "component" "redis") | nindent 4 }}
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis

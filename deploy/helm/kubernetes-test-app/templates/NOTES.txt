@@ -1,0 +1,18 @@
+kubernetes-test-app is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}" (revision {{ .Release.Revision }}).
+Images: {{ include "kubernetes-test-app.image" (dict "ctx" $ "repository" .Values.producer.image.repository) }}
+        {{ include "kubernetes-test-app.image" (dict "ctx" $ "repository" .Values.worker.image.repository) }}
+Workers: {{ .Values.worker.replicas }} (loop mode)
+
+Open the web page:
+{{- if .Values.producer.ingress.enabled }}
+  Ingress:      http://{{ .Values.producer.ingress.host | default "<any-node-address>" }}/
+{{- end }}
+  Port-forward: kubectl -n {{ .Release.Namespace }} port-forward --address "$(tailscale ip -4)" svc/producer 8080:{{ .Values.producer.service.port }}
+                then http://<that-ip>:8080/  (binds only to the Tailscale IP, never 0.0.0.0)
+
+Useful commands:
+  kubectl -n {{ .Release.Namespace }} get pods -o wide              # which node each pod runs on
+  kubectl -n {{ .Release.Namespace }} logs -f deployment/worker     # one worker's log
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=worker --prefix -f
+  helm -n {{ .Release.Namespace }} upgrade {{ .Release.Name }} <chart> -f <values> --set worker.replicas=4
+  helm -n {{ .Release.Namespace }} history {{ .Release.Name }}

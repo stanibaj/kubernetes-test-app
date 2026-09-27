@@ -1,0 +1,15 @@
+# App configuration, passed to the producer and workers with `envFrom`.
+# All values are strings (ConfigMap data must be), hence `quote`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  labels:
+    {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "config") | nindent 4 }}
+data:
+  # The Redis Service's DNS name inside the namespace (see redis.yaml).
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  QUEUE_NAME: {{ .Values.config.queueName | quote }}
+  FAIL_RATE: {{ .Values.config.failRate | quote }}
+  MAX_ATTEMPTS: {{ .Values.config.maxAttempts | quote }}

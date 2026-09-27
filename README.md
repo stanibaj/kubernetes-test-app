@@ -8,7 +8,7 @@ The full specification is in [`spec.md`](spec.md). The project is built in stage
 |---|---|---|
 | 1 | Local Python app + a homemade "local scaler" | [docs/stage-1.md](docs/stage-1.md) |
 | 2 | Containers + Docker Compose | [docs/stage-2.md](docs/stage-2.md) |
-| 3a | k3s with manual scaling | not yet |
+| 3a | k3s with a Helm chart, manual scaling | [docs/stage-3a.md](docs/stage-3a.md), [file-by-file manual](docs/stage-3a-manual.md) |
 | 3b | k3s with KEDA autoscaling | not yet |
 | 4 | GKE with node autoscaling | not yet |
 
@@ -39,9 +39,20 @@ make down                  # stop and remove everything
 
 Details, experiments and the registry/push instructions are in [docs/stage-2.md](docs/stage-2.md).
 
+## Quick start (Stage 3a: k3s with Helm)
+
+```bash
+# once: kubeconfig, Tailscale grant, pull secret; see docs/stage-3a.md "One-time setup"
+helm lint deploy/helm/kubernetes-test-app -f deploy/helm/values/k3s.yaml
+helm upgrade --install kubernetes-test-app deploy/helm/kubernetes-test-app \
+  -n kubernetes-test-app --create-namespace -f deploy/helm/values/k3s.yaml
+kubectl -n kubernetes-test-app get pods -o wide
+# → http://gcp-srv-02.beefalo-fort.ts.net/   (tailnet only)
+```
+
 ## Layout
 
 - `app/`: application code only (producer, worker, tools, tests). It knows nothing about Docker or Kubernetes.
-- `deploy/`: packaging and deployment. `docker/` holds the Dockerfiles (built from the repo root) and `compose/` holds the Compose file.
+- `deploy/`: packaging and deployment. `docker/` holds the Dockerfiles (built from the repo root), `compose/` holds the Compose file, and `helm/` holds the `kubernetes-test-app/` chart plus per-environment `values/` files.
 - `Makefile`: `test`, `build`, `push`, `up`, `down`.
-- `docs/`: one explanation per stage.
+- `docs/`: one explanation per stage, plus [`cheatsheet.md`](docs/cheatsheet.md) (kubectl + Helm commands, grouped by the question they answer).

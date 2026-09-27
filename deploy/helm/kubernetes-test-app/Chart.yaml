@@ -1,0 +1,10 @@
+# Chart metadata. apiVersion v2 = a Helm 3+ chart (Helm 4 uses the same format).
+apiVersion: v2
+name: kubernetes-test-app
+description: Redis job queue with a producer web page and workers, for watching Kubernetes scale workers.
+type: application
+# Version of the CHART (its templates). Bump it when the templates change.
+version: 0.1.0
+# Version of the APP the chart deploys. Used as the default image tag when
+# image.tag is empty; environments normally set image.tag explicitly.
+appVersion: "dev"
