@@ -85,3 +85,31 @@ def test_index_serves_html(client):
     res = client.get("/")
     assert res.status_code == 200
     assert "text/html" in res.headers["content-type"]
+
+
+@pytest.fixture
+def broken_client():
+    # A fake Redis that behaves like an unreachable server.
+    server = fakeredis.FakeServer()
+    server.connected = False
+    producer.app.dependency_overrides[producer.get_redis] = lambda: fakeredis.FakeRedis(server=server)
+    yield TestClient(producer.app)
+    producer.app.dependency_overrides.clear()
+
+
+def test_healthz_is_ok_even_without_redis(broken_client):
+    res = broken_client.get("/healthz")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ok"}
+
+
+def test_readyz_is_ready_when_redis_answers(client):
+    res = client.get("/readyz")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ready"}
+
+
+def test_readyz_is_not_ready_when_redis_is_down(broken_client):
+    res = broken_client.get("/readyz")
+    assert res.status_code == 503
+    assert res.json()["status"] == "not ready"

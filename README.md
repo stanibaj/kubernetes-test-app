@@ -7,7 +7,7 @@ The full specification is in [`spec.md`](spec.md). The project is built in stage
 | Stage | What | Docs |
 |---|---|---|
 | 1 | Local Python app + a homemade "local scaler" | [docs/stage-1.md](docs/stage-1.md) |
-| 2 | Containers + Docker Compose | not yet |
+| 2 | Containers + Docker Compose | [docs/stage-2.md](docs/stage-2.md) |
 | 3a | k3s with manual scaling | not yet |
 | 3b | k3s with KEDA autoscaling | not yet |
 | 4 | GKE with node autoscaling | not yet |
@@ -28,8 +28,20 @@ python app/worker/worker.py              # one worker in loop mode
 python app/tools/local_scaler.py --max 5 # or: autoscale once-workers from queue length
 ```
 
+## Quick start (Stage 2: containers)
+
+```bash
+make test                  # pytest (uses the Stage 1 .venv)
+make up                    # build images, start redis + producer + worker with Podman
+                           # → http://$(tailscale ip -4):8000   (WORKERS=4 for more workers)
+make down                  # stop and remove everything
+```
+
+Details, experiments and the registry/push instructions are in [docs/stage-2.md](docs/stage-2.md).
+
 ## Layout
 
 - `app/`: application code only (producer, worker, tools, tests). It knows nothing about Docker or Kubernetes.
-- `deploy/`: packaging and deployment (added from Stage 2 on).
+- `deploy/`: packaging and deployment. `docker/` holds the Dockerfiles (built from the repo root) and `compose/` holds the Compose file.
+- `Makefile`: `test`, `build`, `push`, `up`, `down`.
 - `docs/`: one explanation per stage.

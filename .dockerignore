@@ -1,0 +1,9 @@
+# Allowlist: send NOTHING to the image build except the files listed below.
+# (Tests, .venv, docs, deploy/, .git stay out: smaller context, faster
+# builds, and no accidental secrets in images.)
+*
+!app/producer/app.py
+!app/producer/static/
+!app/producer/requirements.txt
+!app/worker/worker.py
+!app/worker/requirements.txt
