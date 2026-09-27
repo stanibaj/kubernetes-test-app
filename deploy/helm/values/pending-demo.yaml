@@ -1,0 +1,22 @@
+# Capacity-limit demo (Stage 3b experiment 6). Layered AFTER k3s.yaml:
+#   helm upgrade --install kubernetes-test-app deploy/helm/kubernetes-test-app \
+#     -n kubernetes-test-app -f deploy/helm/values/k3s.yaml -f deploy/helm/values/pending-demo.yaml
+# (or: make deploy-pending-demo)
+#
+# Every node here has 2 CPUs, and about 0.7-0.85 CPU is already requested by
+# system pods, Redis, the producer and KEDA. A worker requesting a whole CPU
+# therefore fits once per node (the k3s server is untainted, so it runs
+# workers too): about 3 run, and the rest stay Pending with
+# "Insufficient cpu" until a running worker finishes.
+
+worker:
+  resources:
+    requests:
+      cpu: "1"
+      memory: 64Mi
+    limits:
+      cpu: "1"
+      memory: 64Mi
+  keda:
+    # More workers wanted than the cluster can fit.
+    maxReplicaCount: 20

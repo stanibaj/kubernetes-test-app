@@ -1,0 +1,11 @@
+# ScaledJob vs ScaledObject comparison (Stage 3b experiment 8). Layered AFTER
+# k3s.yaml (and optionally pending-demo.yaml):
+#   helm upgrade --install kubernetes-test-app deploy/helm/kubernetes-test-app \
+#     -n kubernetes-test-app -f deploy/helm/values/k3s.yaml -f deploy/helm/values/scaledobject.yaml
+# (or: make deploy-scaledobject)
+#
+# Workers run as a loop-mode Deployment again, but KEDA (not Helm, not you)
+# sets its replica count, from 0 up to worker.keda.maxReplicaCount.
+
+worker:
+  mode: scaledobject

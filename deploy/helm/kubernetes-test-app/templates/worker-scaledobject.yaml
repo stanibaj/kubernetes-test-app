@@ -1,0 +1,37 @@
+{{- /*
+KEDA ScaledObject: scales the loop-mode worker Deployment (worker-deployment.yaml)
+between 0 and maxReplicaCount from the Redis list length. Rendered only when
+worker.mode=scaledobject (KEDA's CRDs must be installed first).
+Under the hood KEDA creates an HPA (HorizontalPodAutoscaler) for 1..max and
+handles 0 <-> 1 itself.
+*/}}
+{{- if eq .Values.worker.mode "scaledobject" }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+  labels:
+    {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "worker") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: worker
+  pollingInterval: {{ .Values.worker.keda.pollingInterval }}
+  # Scale to zero when the list is empty.
+  minReplicaCount: 0
+  maxReplicaCount: {{ .Values.worker.keda.maxReplicaCount }}
+  # Seconds the list must stay empty before going from 1+ to 0 replicas
+  # (longer than the longest job; see values.yaml).
+  cooldownPeriod: {{ .Values.worker.scaledObject.cooldownPeriod }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          # The HPA scales down to the HIGHEST recommendation of this window.
+          # Important here: the list excludes running jobs, so as soon as
+          # workers pop their jobs the HPA "wants" fewer pods and would stop
+          # workers mid-job (they requeue on SIGTERM, but the work is lost).
+          # 300 = the Kubernetes default. Try 0 to watch that happen.
+          stabilizationWindowSeconds: {{ .Values.worker.scaledObject.scaleDownStabilizationSeconds }}
+  triggers:
+    {{- include "kubernetes-test-app.redisTrigger" . | nindent 4 }}
+{{- end }}

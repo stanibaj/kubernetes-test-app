@@ -20,7 +20,18 @@ WORKER_IMAGE   := $(REGISTRY)/kubernetes-test-app-worker:$(TAG)
 # Make these visible to the compose file's ${...} variables.
 export REGISTRY TAG TS_IP WORKERS PRODUCER_PORT
 
-.PHONY: help test build push up down
+# Kubernetes (Stage 3): the Helm release, its namespace, and the values files.
+# Later -f files override earlier ones. Extra flags: make deploy HELM_ARGS="--set config.failRate=0.3"
+NS         ?= kubernetes-test-app
+RELEASE    ?= kubernetes-test-app
+CHART      := deploy/helm/kubernetes-test-app
+VALUES     := deploy/helm/values
+K3S_VALUES := -f $(VALUES)/k3s.yaml
+HELM_ARGS  ?=
+HELM_DEPLOY = helm upgrade --install $(RELEASE) $(CHART) -n $(NS) --create-namespace
+
+.PHONY: help test build push up down \
+        install-keda deploy deploy-pending-demo deploy-scaledobject undeploy watch logs-worker
 
 help:
 	@echo "make test   - run pytest in .venv"
@@ -28,6 +39,13 @@ help:
 	@echo "make push   - push both images to REGISTRY (log in first, see docs/stage-2.md)"
 	@echo "make up     - start redis + producer + worker (WORKERS=n to scale)"
 	@echo "make down   - stop and remove the compose stack"
+	@echo "make install-keda        - install KEDA into the cluster (once per cluster)"
+	@echo "make deploy              - helm upgrade --install with k3s.yaml (KEDA ScaledJob)"
+	@echo "make deploy-pending-demo - same + pending-demo.yaml (1 CPU per worker, max 20)"
+	@echo "make deploy-scaledobject - same + scaledobject.yaml (KEDA-scaled Deployment)"
+	@echo "make undeploy            - helm uninstall (the namespace stays)"
+	@echo "make watch               - live view of ScaledJob/ScaledObject/HPA/Jobs/pods"
+	@echo "make logs-worker         - follow the logs of every worker pod, new ones too"
 
 test:
 	.venv/bin/pytest
@@ -59,3 +77,27 @@ down:
 	  fi; \
 	done
 	@$(CONTAINER_TOOL) network rm $(PROJECT)_default >/dev/null 2>&1 || true
+
+# --- Kubernetes + KEDA (Stage 3b) -------------------------------------------
+
+install-keda:
+	deploy/scripts/install-keda.sh
+
+deploy:
+	$(HELM_DEPLOY) $(K3S_VALUES) $(HELM_ARGS)
+
+deploy-pending-demo:
+	$(HELM_DEPLOY) $(K3S_VALUES) -f $(VALUES)/pending-demo.yaml $(HELM_ARGS)
+
+deploy-scaledobject:
+	$(HELM_DEPLOY) $(K3S_VALUES) -f $(VALUES)/scaledobject.yaml $(HELM_ARGS)
+
+undeploy:
+	helm uninstall $(RELEASE) -n $(NS)
+
+# "No resources found" for kinds of the other mode is normal.
+watch:
+	watch -n1 kubectl -n $(NS) get scaledjob,scaledobject,hpa,jobs,pods -o wide
+
+logs-worker:
+	deploy/scripts/logs-worker.sh $(NS)
