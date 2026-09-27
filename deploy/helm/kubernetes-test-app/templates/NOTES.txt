@@ -1,7 +1,13 @@
 kubernetes-test-app is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}" (revision {{ .Release.Revision }}).
 Images: {{ include "kubernetes-test-app.image" (dict "ctx" $ "repository" .Values.producer.image.repository) }}
         {{ include "kubernetes-test-app.image" (dict "ctx" $ "repository" .Values.worker.image.repository) }}
-Workers: {{ .Values.worker.replicas }} (loop mode)
+{{- if eq .Values.worker.mode "deployment" }}
+Workers: {{ .Values.worker.replicas }} (mode deployment: loop workers, scaled by hand)
+{{- else if eq .Values.worker.mode "scaledjob" }}
+Workers: KEDA ScaledJob, one once-mode Job per waiting job (max {{ .Values.worker.keda.maxReplicaCount }}), checked every {{ .Values.worker.keda.pollingInterval }}s
+{{- else }}
+Workers: KEDA ScaledObject scales Deployment "worker" between 0 and {{ .Values.worker.keda.maxReplicaCount }} (loop mode)
+{{- end }}
 
 Open the web page:
 {{- if .Values.producer.ingress.enabled }}
@@ -12,7 +18,11 @@ Open the web page:
 
 Useful commands:
   kubectl -n {{ .Release.Namespace }} get pods -o wide              # which node each pod runs on
+{{- if eq .Values.worker.mode "deployment" }}
   kubectl -n {{ .Release.Namespace }} logs -f deployment/worker     # one worker's log
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} get scaledjob,scaledobject,hpa,jobs,pods -o wide   # what KEDA is doing
+{{- end }}
   kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=worker --prefix -f
-  helm -n {{ .Release.Namespace }} upgrade {{ .Release.Name }} <chart> -f <values> --set worker.replicas=4
+  helm -n {{ .Release.Namespace }} upgrade {{ .Release.Name }} <chart> -f <values> --set config.failRate=0.3
   helm -n {{ .Release.Namespace }} history {{ .Release.Name }}

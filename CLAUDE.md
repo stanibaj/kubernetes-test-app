@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A learning project: a trivial Redis-backed job queue (producer + workers) used to watch Kubernetes scale workers based on queue length. **`spec.md` is the source of truth** for requirements, Redis data model, env vars, API, experiments, and the final repo layout. Read the relevant section before implementing anything.
 
-The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manual scaling, 3b: KEDA autoscaling, 4: GKE). **Stages 1, 2 and 3a are implemented** (see `docs/stage-*.md`); nothing from 3b or later exists yet.
+The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manual scaling, 3b: KEDA autoscaling, 4: GKE). **Stages 1, 2, 3a and 3b are implemented** (see `docs/stage-*.md`); nothing from Stage 4 exists yet. KEDA 2.21.0 is installed on k3s (namespace `keda`), and `k3s.yaml` sets `worker.mode: scaledjob`.
 
 ## Working agreement (from spec.md §1 — follow strictly)
 
@@ -26,7 +26,7 @@ The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manu
 
 ## Key design invariants (easy to break)
 
-- **One worker processes exactly one job at a time.** The worker pops the job from `jobs:queue` when it starts, so the list length excludes in-progress jobs. This matters for the KEDA `scalingStrategy` choice in 3b (check the KEDA docs for the pinned version).
+- **One worker processes exactly one job at a time.** The worker pops the job from `jobs:queue` when it starts, so the list length excludes in-progress jobs. That's why the ScaledJob uses `scalingStrategy: accurate`, and why the ScaledObject's `cooldownPeriod` must exceed the longest job.
 - The worker's Redis `socket_timeout` (`SOCKET_TIMEOUT`) must stay longer than `BLPOP_TIMEOUT`. redis-py 8 defaults to 5 s, the same as the BLPOP wait, so across k3s nodes the empty-queue reply arrived late and the worker crash-looped (Stage 3a). `redis.TimeoutError` counts as a real error, like `ConnectionError` (exit 1).
 - Worker modes: `WORKER_MODE=once` (one job then exit; an empty queue exits 0) is used by the local scaler and KEDA ScaledJob. `loop` (BLPOP with timeout) is used by Compose, the k8s Deployment, and ScaledObject.
 - On SIGTERM/SIGINT mid-job, the worker requeues the job, cleans up `jobs:processing`, and exits. It must work as PID 1 in a container. The k8s `terminationGracePeriodSeconds` must exceed the longest job.
@@ -55,7 +55,7 @@ python app/tools/local_scaler.py --max 5                  # starts once-workers 
 
 Components are script directories, not packages. Tests import `app`, `worker` and `local_scaler` directly via `pytest.ini`'s `pythonpath`. The producer's Redis client is injected through the `get_redis` dependency, and tests override it with fakeredis. `process_job` takes injectable `sleep`/`rand`. `fakeredis.TcpFakeServer` can stand in for a real Redis in end-to-end smoke tests.
 
-Planned Makefile targets (Stage 2+): `build`, `push`, `up`, `down`, `test`, with images parameterized by `REGISTRY` and `TAG`. Stage 3b adds `install-keda`, `deploy`, `deploy-pending-demo`, `undeploy`, `watch`, `logs-worker` (deploy = `helm upgrade --install`, undeploy = `helm uninstall`). Helm v4.3.0 and kubectl v1.36 are in `~/.local/bin`. `~/.kube/config` points at the k3s API over the tailnet (`https://100.112.126.75:6443`). Helm 4 uses server-side apply, so drift from `kubectl scale` makes `helm upgrade` fail with a conflict unless `--force-conflicts` is passed.
+Makefile targets: `build`, `push`, `up`, `down`, `test` (images parameterized by `REGISTRY` and `TAG`), and for k3s `install-keda`, `deploy`, `deploy-pending-demo`, `deploy-scaledobject`, `undeploy`, `watch`, `logs-worker` (deploy = `helm upgrade --install` with the `-f` files; extra flags via `HELM_ARGS`). Helm v4.3.0 and kubectl v1.36 are in `~/.local/bin`. `~/.kube/config` points at the k3s API over the tailnet (`https://100.112.126.75:6443`). Helm 4 uses server-side apply, so drift from `kubectl scale` makes `helm upgrade` fail with a conflict unless `--force-conflicts` is passed.
 
 ## Target environments
 

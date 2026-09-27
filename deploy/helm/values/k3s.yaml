@@ -33,4 +33,7 @@ producer:
     host: gcp-srv-02.beefalo-fort.ts.net
 
 worker:
-  replicas: 8
+  # Stage 3b: KEDA starts one Job per waiting job (needs KEDA installed:
+  # make install-keda). worker.replicas is not used in this mode.
+  # For the ScaledObject comparison, layer values/scaledobject.yaml on top.
+  mode: scaledjob

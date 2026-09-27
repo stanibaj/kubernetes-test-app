@@ -50,9 +50,18 @@ kubectl -n kubernetes-test-app get pods -o wide
 # → http://gcp-srv-02.beefalo-fort.ts.net/   (tailnet only)
 ```
 
+## Quick start (Stage 3b: KEDA autoscaling)
+
+```bash
+make install-keda            # once per cluster: KEDA 2.21.0 into namespace keda
+make deploy                  # k3s.yaml → worker.mode=scaledjob: one Job per waiting job, 0..10
+make watch                   # live view (other terminal: make logs-worker)
+# submit jobs on the page and watch workers appear and go back to 0; details in docs/stage-3b.md
+```
+
 ## Layout
 
 - `app/`: application code only (producer, worker, tools, tests). It knows nothing about Docker or Kubernetes.
-- `deploy/`: packaging and deployment. `docker/` holds the Dockerfiles (built from the repo root), `compose/` holds the Compose file, and `helm/` holds the `kubernetes-test-app/` chart plus per-environment `values/` files.
-- `Makefile`: `test`, `build`, `push`, `up`, `down`.
+- `deploy/`: packaging and deployment. `docker/` holds the Dockerfiles (built from the repo root), `compose/` holds the Compose file, `helm/` holds the `kubernetes-test-app/` chart plus per-environment `values/` files, and `scripts/` holds `install-keda.sh` and `logs-worker.sh`.
+- `Makefile`: `test`, `build`, `push`, `up`, `down`; for k3s + KEDA `install-keda`, `deploy`, `deploy-pending-demo`, `deploy-scaledobject`, `undeploy`, `watch`, `logs-worker`.
 - `docs/`: one explanation per stage, plus [`cheatsheet.md`](docs/cheatsheet.md) (kubectl + Helm commands, grouped by the question they answer).

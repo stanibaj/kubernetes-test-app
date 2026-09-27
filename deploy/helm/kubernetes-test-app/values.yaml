@@ -77,8 +77,41 @@ producer:
 worker:
   image:
     repository: kubernetes-test-app-worker
-  # Number of worker pods (manual scaling). 0 is allowed: jobs just wait.
+  # How workers run and who decides how many there are:
+  #   deployment   - loop-mode Deployment, `replicas` below (manual, Stage 3a)
+  #   scaledjob    - KEDA ScaledJob: one once-mode Job per waiting job
+  #   scaledobject - loop-mode Deployment scaled 0..N by a KEDA ScaledObject
+  # The KEDA modes need KEDA installed first (deploy/scripts/install-keda.sh).
+  # The default stays "deployment" so a plain install works on any cluster,
+  # with or without KEDA.
+  mode: deployment
+  # Number of worker pods, used only in "deployment" mode. 0 is allowed:
+  # jobs just wait.
   replicas: 1
+  # Settings shared by both KEDA modes.
+  keda:
+    # Seconds between checks of the list length.
+    pollingInterval: 5
+    # Upper limit on workers (Jobs or Deployment replicas).
+    maxReplicaCount: 10
+    # Waiting jobs per worker. "1" = one worker per waiting job.
+    listLength: "1"
+  # Only for mode=scaledjob.
+  scaledJob:
+    # A Job running longer than this is killed (the longest job is 60 s).
+    activeDeadlineSeconds: 600
+    # Finished Jobs kept around, so you can read their logs.
+    successfulJobsHistoryLimit: 5
+    failedJobsHistoryLimit: 5
+  # Only for mode=scaledobject.
+  scaledObject:
+    # Seconds of empty list before scaling from 1+ down to 0. Must be longer
+    # than the longest job (60 s): the list is empty as soon as the LAST job
+    # is popped, while that job still runs for up to 60 s.
+    cooldownPeriod: 90
+    # HPA scale-down window (1+ replicas): it scales down only to the highest
+    # count wanted in the last N seconds. 300 is the Kubernetes default.
+    scaleDownStabilizationSeconds: 300
   # How long Kubernetes waits after SIGTERM before SIGKILL. Must be longer
   # than the longest job (60 s): the worker requeues its job on SIGTERM and
   # exits within a second, so this is a generous upper bound.

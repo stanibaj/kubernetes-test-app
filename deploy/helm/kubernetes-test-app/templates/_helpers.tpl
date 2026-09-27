@@ -81,3 +81,77 @@ and the Deployment rolls out new pods.
 {{- define "kubernetes-test-app.configChecksum" -}}
 checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
 {{- end }}
+
+{{/*
+Stop with a clear message if worker.mode is misspelled, instead of silently
+rendering no workers at all. Called once, from worker-deployment.yaml.
+*/}}
+{{- define "kubernetes-test-app.validateWorkerMode" -}}
+{{- if not (has .Values.worker.mode (list "deployment" "scaledjob" "scaledobject")) }}
+{{- fail (printf "worker.mode must be deployment, scaledjob or scaledobject (got %q)" .Values.worker.mode) }}
+{{- end }}
+{{- end }}
+
+{{/*
+The worker pod spec (everything under a pod template's "spec:"). Shared by
+the Deployment (loop mode) and the KEDA ScaledJob (once mode), so the two
+run exactly the same container and differ only in what is passed here:
+  include "kubernetes-test-app.workerPodSpec"
+    (dict "ctx" $ "workerMode" "loop" "restartPolicy" "Always")
+*/}}
+{{- define "kubernetes-test-app.workerPodSpec" -}}
+{{- $v := .ctx.Values -}}
+enableServiceLinks: false
+# Always = a Deployment restarts a crashed container in place.
+# Never  = a Job's pod runs once; a failed pod is not retried (see backoffLimit).
+restartPolicy: {{ .restartPolicy }}
+# On delete/scale-down: SIGTERM, then up to this long before SIGKILL.
+# The worker requeues its current job on SIGTERM and exits.
+terminationGracePeriodSeconds: {{ $v.worker.terminationGracePeriodSeconds }}
+{{- with $v.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+securityContext:
+  {{- include "kubernetes-test-app.podSecurityContext" 10001 | nindent 2 }}
+containers:
+  - name: worker
+    image: {{ include "kubernetes-test-app.image" (dict "ctx" .ctx "repository" $v.worker.image.repository) }}
+    imagePullPolicy: {{ $v.image.pullPolicy }}
+    envFrom:
+      - configMapRef:
+          name: app-config
+    env:
+      - name: WORKER_MODE
+        value: {{ .workerMode }}
+      # Downward API: Kubernetes fills these in from the pod's own
+      # metadata, so logs and the status page show which pod did a
+      # job, and on which node it ran.
+      - name: WORKER_ID
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+      - name: HOST_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: spec.nodeName
+    # No probes: the worker serves no HTTP.
+    resources:
+      {{- toYaml $v.worker.resources | nindent 6 }}
+    securityContext:
+      {{- include "kubernetes-test-app.containerSecurityContext" . | nindent 6 }}
+{{- end }}
+
+{{/*
+KEDA trigger that reads the length of the Redis job list (LLEN). Shared by
+the ScaledJob and the ScaledObject. The KEDA operator runs in its own "keda"
+namespace, so it needs Redis's full DNS name, not just "redis".
+*/}}
+{{- define "kubernetes-test-app.redisTrigger" -}}
+- type: redis
+  metadata:
+    address: redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+    listName: {{ .Values.config.queueName | quote }}
+    # Target number of waiting items per worker. "1" = one worker per job.
+    listLength: {{ .Values.worker.keda.listLength | quote }}
+{{- end }}

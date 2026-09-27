@@ -210,6 +210,21 @@ curl -s http://gcp-srv-02.beefalo-fort.ts.net/api/status | python3 -m json.tool
 
 ---
 
+## 11b. KEDA: what is it deciding, and why? (Stage 3b)
+
+```bash
+kubectl get scaledjob,scaledobject,hpa,jobs,pods -o wide     # everything KEDA owns or creates (= make watch)
+kubectl describe scaledjob worker                            # READY/ACTIVE conditions, events
+kubectl get hpa keda-hpa-worker -o yaml                      # ScaledObject mode: current metric vs target
+kubectl -n keda logs deploy/keda-operator | grep scaleexecutor | tail   # "Creating jobs ... Number of jobs: N"
+kubectl -n keda get pods                                     # is KEDA itself healthy?
+kubectl get jobs --sort-by=.metadata.creationTimestamp       # DURATION: real workers vs "no job available" extras
+```
+
+**Check an assumption:** "KEDA sees the same queue length I do". Compare `kubectl exec deploy/redis -- redis-cli llen jobs:queue` with the numbers in the operator log for the same poll.
+
+---
+
 ## 12. Learning the API itself
 
 ```bash

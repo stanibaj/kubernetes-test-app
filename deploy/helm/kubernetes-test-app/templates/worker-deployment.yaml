@@ -1,5 +1,11 @@
-# Workers in loop mode, scaled by hand: the replica count comes from
-# worker.replicas (or `kubectl scale`, until the next `helm upgrade`).
+{{- include "kubernetes-test-app.validateWorkerMode" . }}
+{{- /*
+Workers in loop mode, as a Deployment. Rendered in two worker.mode values:
+  deployment   - scaled by hand: replicas from worker.replicas (Stage 3a)
+  scaledobject - scaled by KEDA (worker-scaledobject.yaml), 0..maxReplicaCount
+In scaledjob mode there is no Deployment; see worker-scaledjob.yaml.
+*/}}
+{{- if has .Values.worker.mode (list "deployment" "scaledobject") }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,8 +13,16 @@ metadata:
   labels:
     {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "worker") | nindent 4 }}
 spec:
+  {{- if eq .Values.worker.mode "deployment" }}
   # Rendered as-is (no `default`), so worker.replicas=0 really means 0.
   replicas: {{ .Values.worker.replicas }}
+  {{- else }}
+  {{- /*
+  scaledobject mode: NO replicas field. KEDA's HPA owns the count. If Helm
+  also set it, every `helm upgrade` would reset the count (the drift from
+  Stage 3a experiment 3), or conflict with the HPA under server-side apply.
+  */}}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "kubernetes-test-app.selectorLabels" (dict "ctx" $ "component" "worker") | nindent 6 }}
@@ -19,40 +33,5 @@ spec:
       annotations:
         {{- include "kubernetes-test-app.configChecksum" . | nindent 8 }}
     spec:
-      enableServiceLinks: false
-      # On delete/scale-down: SIGTERM, then up to this long before SIGKILL.
-      # The worker requeues its current job on SIGTERM and exits.
-      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      securityContext:
-        {{- include "kubernetes-test-app.podSecurityContext" 10001 | nindent 8 }}
-      containers:
-        - name: worker
-          image: {{ include "kubernetes-test-app.image" (dict "ctx" $ "repository" .Values.worker.image.repository) }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          envFrom:
-            - configMapRef:
-                name: app-config
-          env:
-            - name: WORKER_MODE
-              value: loop
-            # Downward API: Kubernetes fills these in from the pod's own
-            # metadata, so logs and the status page show which pod did a
-            # job, and on which node it ran.
-            - name: WORKER_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: HOST_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-          # No probes: the worker serves no HTTP. If it crashes (exit 1,
-          # e.g. Redis unreachable), the kubelet restarts it.
-          resources:
-            {{- toYaml .Values.worker.resources | nindent 12 }}
-          securityContext:
-            {{- include "kubernetes-test-app.containerSecurityContext" . | nindent 12 }}
+      {{- include "kubernetes-test-app.workerPodSpec" (dict "ctx" $ "workerMode" "loop" "restartPolicy" "Always") | nindent 6 }}
+{{- end }}

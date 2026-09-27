@@ -1,0 +1,59 @@
+{{- /*
+KEDA ScaledJob: one Kubernetes Job (one pod, WORKER_MODE=once) per waiting
+item in the Redis list. Rendered only when worker.mode=scaledjob, because the
+ScaledJob kind exists only once KEDA's CRDs are installed
+(deploy/scripts/install-keda.sh); this chart never installs them.
+*/}}
+{{- if eq .Values.worker.mode "scaledjob" }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: worker
+  labels:
+    {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "worker") | nindent 4 }}
+spec:
+  # How often KEDA checks the list length (seconds).
+  pollingInterval: {{ .Values.worker.keda.pollingInterval }}
+  # At most this many worker Jobs at the same time.
+  maxReplicaCount: {{ .Values.worker.keda.maxReplicaCount }}
+  # Finished Jobs (and their pods, with logs) to keep for inspection.
+  successfulJobsHistoryLimit: {{ .Values.worker.scaledJob.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.worker.scaledJob.failedJobsHistoryLimit }}
+  # "accurate": our worker LPOPs its job as soon as it starts, so the list
+  # length counts only WAITING jobs, not running ones. Each poll, KEDA
+  # creates:
+  #   if waiting + running > max:  max - running
+  #   else:                        waiting - pending
+  # where "pending" = Jobs created but whose pod isn't running yet (they
+  # will take items that are still in the list). With the "default" strategy
+  # (waiting - running) running Jobs would be subtracted a second time,
+  # e.g. max 20, 10 waiting + 5 running → only 5 new Jobs instead of 10.
+  # Small race: a pod that is Running but hasn't popped its job yet counts
+  # as neither, so KEDA may start one extra Job. It finds the list empty,
+  # logs "no job available" and exits 0.
+  scalingStrategy:
+    strategy: accurate
+  # "gradual": when this ScaledJob changes (e.g. helm upgrade with a new
+  # FAIL_RATE), let running Jobs finish; only new Jobs use the new spec.
+  # The "default" rollout deletes the running Jobs.
+  rollout:
+    strategy: gradual
+  triggers:
+    {{- include "kubernetes-test-app.redisTrigger" . | nindent 4 }}
+  # A normal batch/v1 JobSpec: what each created Job looks like.
+  jobTargetRef:
+    # 0 retries: a failed pod is not re-run. Simulated job failures still
+    # exit 0 (the worker requeues the job itself), so only real errors
+    # (e.g. Redis unreachable) count as a failed Job.
+    backoffLimit: 0
+    # Kill the Job if it runs longer than this (longest job is 60 s).
+    activeDeadlineSeconds: {{ .Values.worker.scaledJob.activeDeadlineSeconds }}
+    template:
+      metadata:
+        labels:
+          {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "worker") | nindent 10 }}
+        annotations:
+          {{- include "kubernetes-test-app.configChecksum" . | nindent 10 }}
+      spec:
+        {{- include "kubernetes-test-app.workerPodSpec" (dict "ctx" $ "workerMode" "once" "restartPolicy" "Never") | nindent 8 }}
+{{- end }}
