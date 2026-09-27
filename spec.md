@@ -14,7 +14,7 @@ The project is built in **four stages**, each building on the previous one:
 ### Working agreement for the implementer (Claude Code)
 
 - **The repository already exists** and is named `kubernetes-test-app`. Before creating anything, inspect what is already in it. Do not overwrite or delete existing files without asking; build the structure described in section 7 around what exists, and mention any conflicts to the user.
-- **Keep application code and deployment specifics separate.** Everything under `app/` is plain application source code that knows nothing about Docker or Kubernetes. Everything needed to package and run it (Dockerfiles, Compose, Kubernetes manifests, deployment scripts) lives under `deploy/`. See section 7.
+- **Keep application code and deployment specifics separate.** Everything under `app/` is plain application source code that knows nothing about Docker or Kubernetes. Everything needed to package and run it (Dockerfiles, Compose, the Helm chart, deployment scripts) lives under `deploy/`. See section 7.
 - **Implement one stage at a time.** Only implement the stage the user asks for. Do not create files that belong to later stages (no Dockerfiles in Stage 1, no Kubernetes manifests in Stage 2, and so on).
 - **Stop at the end of each stage** and let the user run and verify it before continuing.
 - **Explain as you go.** The user is learning. At the end of each stage, write `docs/stage-N.md` explaining what was built, the concepts involved, why each change was needed, and how to run the stage's experiments. When a later stage changes earlier code, explain why the change was necessary.
@@ -155,7 +155,9 @@ All experiments pass and images can be built and pushed to the chosen registry.
 
 ## 5. Stage 3: Deploy to k3s
 
-**Target cluster:** self-managed k3s on 3 Google Cloud VMs (1 server, 2 agents), linux/amd64, already installed. Default Traefik ingress is available, but manifests use only the standard `Ingress` resource with a configurable `ingressClassName` (no Traefik CRDs), to stay portable to GKE.
+**Target cluster:** self-managed k3s on 3 Google Cloud VMs (1 server, 2 agents), linux/amd64, already installed. Default Traefik ingress is available, but the chart uses only the standard `Ingress` resource with a configurable `ingressClassName` (no Traefik CRDs), to stay portable to GKE.
+
+**Packaging:** the app is deployed with a **Helm chart** written for this project (Helm 3+ / chart `apiVersion: v2`; document the Helm version used). The chart's templates are platform-neutral. Each environment gets its own values file, and variants are layered on top with multiple `-f` flags (later files override earlier ones). The user is learning Helm, so the docs must explain the chart's structure, templates and `_helpers.tpl`, how values flow into templates, and how to inspect the output with `helm lint` and `helm template` before installing.
 
 **Image pulls:** k3s on plain VMs does not automatically authenticate to Artifact Registry. Document the options (an `imagePullSecret` from a service account key, or k3s `registries.yaml`), and note that a public registry works by just changing the image prefix.
 
@@ -163,44 +165,64 @@ This stage has two parts. Implement 3a first and stop; implement 3b when the use
 
 ### Stage 3a: Plain Kubernetes, manual scaling
 
-Manifests in Kustomize layout:
+Helm chart layout:
 
 ```
-deploy/k8s/
-  base/
-    kustomization.yaml
-    namespace.yaml          # namespace: kubernetes-test-app
-    redis.yaml              # Deployment + ClusterIP Service, emptyDir storage
-    producer.yaml           # Deployment + Service + Ingress, probes
-    worker-deployment.yaml  # Deployment, WORKER_MODE=loop, replicas: 1
-  overlays/
-    k3s/                    # registry/image, ingress host and class, pull secret
+deploy/helm/
+  kubernetes-test-app/        # the chart (the reusable, platform-neutral package)
+    Chart.yaml                # chart name, version, appVersion
+    values.yaml               # defaults for every setting, each one commented
+    templates/
+      _helpers.tpl            # shared names and labels
+      NOTES.txt               # printed after install: how to open the page, useful commands
+      configmap.yaml          # app configuration (REDIS_HOST, QUEUE_NAME, FAIL_RATE, ...)
+      redis.yaml              # Deployment + ClusterIP Service, emptyDir storage
+      producer.yaml           # Deployment + Service + Ingress (Ingress optional via values), probes
+      worker-deployment.yaml  # Deployment, WORKER_MODE=loop, replicas from values (default 1)
+  values/
+    k3s.yaml                  # registry/image, ingress host and class, pull secret
 ```
+
+The namespace is not a chart template. It is created by `helm upgrade --install … --namespace kubernetes-test-app --create-namespace`, which is the usual Helm practice (explain why in the docs).
 
 Requirements:
 
+- Install and upgrade with a single idempotent command: `helm upgrade --install kubernetes-test-app deploy/helm/kubernetes-test-app -n kubernetes-test-app --create-namespace -f deploy/helm/values/k3s.yaml`.
+- Keep the templates readable: use `_helpers.tpl` for names and labels, avoid clever template logic, and comment anything that isn't obvious. `helm lint` must pass with no warnings.
+- Image registry, repository, and tag, along with `imagePullSecrets`, ingress class and host, resources, and worker replicas all come from values. Nothing environment-specific is hard-coded in the templates.
+- A pod-template annotation with a checksum of the ConfigMap (e.g. `checksum/config`), so changing configuration values rolls the pods on `helm upgrade`. Explain this common Helm pattern.
 - Every container has resource requests and limits (worker default: `cpu: 250m`, `memory: 64Mi`).
 - `WORKER_ID` and `HOST_NAME` injected via the Downward API (pod name and `spec.nodeName`).
 - Worker `terminationGracePeriodSeconds` longer than the longest job (e.g., 90 s), relying on the `SIGTERM` handling.
-- Labels: `app.kubernetes.io/name`, `app.kubernetes.io/component`, `app.kubernetes.io/part-of: kubernetes-test-app`.
+- Labels: `app.kubernetes.io/name`, `app.kubernetes.io/component`, `app.kubernetes.io/part-of: kubernetes-test-app`, plus the standard Helm labels `app.kubernetes.io/instance`, `app.kubernetes.io/managed-by`, and `helm.sh/chart`, all generated in `_helpers.tpl`. Selectors use only the labels that never change (name, instance, and component), because Deployment selectors are immutable.
 - Non-root, no privileged containers, `readOnlyRootFilesystem` where practical.
 - Configuration passed with a `ConfigMap`.
 - Also document `kubectl port-forward` as the simplest way to open the web page.
 
-Experiments (`docs/stage-3a.md`): deploy; submit jobs; `kubectl scale deployment worker --replicas=4` and watch pods spread across both agent nodes (`kubectl get pods -o wide`); delete a worker pod mid-job and see the job requeued and the pod replaced by the Deployment; scale to 0 and see jobs wait.
+Experiments (`docs/stage-3a.md`):
+
+1. **Inspect before installing:** `helm lint`, then `helm template … -f deploy/helm/values/k3s.yaml` to see the exact YAML that will be applied. Change a value with `--set` and see the rendered output change.
+2. **Deploy** with `helm upgrade --install`, then `helm list` and `helm status`. Submit jobs.
+3. **Manual scaling:** `kubectl scale deployment worker --replicas=4` and watch pods spread across both agent nodes (`kubectl get pods -o wide`). Then run `helm upgrade` again and see the replicas snap back to the values file. Explain this drift: Helm owns the desired state, so the lasting way to scale is `--set worker.replicas=4` or editing values. This also shows why an autoscaler, and not Helm, should own the replica count in 3b.
+4. **Self-healing:** delete a worker pod mid-job and see the job requeued and the pod replaced by the Deployment.
+5. **Scale to 0** (through values) and see jobs wait.
+6. **Release history:** change a config value (e.g. `FAIL_RATE`) with `helm upgrade`, watch the pods roll because of the ConfigMap checksum, then `helm history` and `helm rollback` to the previous revision.
+7. **Uninstall:** `helm uninstall` and note what it does and doesn't remove (the namespace stays).
 
 ### Stage 3b: Autoscaling with KEDA
 
 - `deploy/scripts/install-keda.sh`: installs KEDA with its official Helm chart at a pinned current stable version.
-- Replace the worker Deployment with a KEDA **ScaledJob** (in an overlay or by restructuring the base, whichever is clearer; explain the choice):
+- A chart value `worker.mode` selects how workers run: `deployment` (3a behavior), `scaledjob`, or `scaledobject`. The templates `worker-scaledjob.yaml` and `worker-scaledobject.yaml` are rendered only when selected, using a simple `if`. The KEDA CRDs are installed separately by the script below, never by this chart, so the chart must not render KEDA resources unless asked. Explain in the docs why the CRDs aren't bundled.
+- Make `scaledjob` the mode used for 3b by setting it in `deploy/helm/values/k3s.yaml`. Explain whether it should become the chart default.
+- The KEDA **ScaledJob** (`worker.mode: scaledjob`):
   - Worker in `WORKER_MODE=once`.
   - `redis` scaler on `jobs:queue` with `listLength: "1"` (one Job per waiting item).
   - `pollingInterval: 5`, `maxReplicaCount: 10`.
   - Job template: `restartPolicy: Never`, `backoffLimit: 0`, `activeDeadlineSeconds: 600`; keep 5 successful and 5 failed Jobs in history.
   - **Scaling strategy:** the worker removes an item from the list when it starts, so the list length excludes in-progress jobs. Choose `scalingStrategy` accordingly after checking the KEDA docs for the pinned version, and explain it in a manifest comment. Experiment 2 below must confirm workers track waiting jobs without systematic over- or under-scaling.
-- A `pending-demo` overlay: raises the worker CPU request (e.g., `cpu: "1"`, adjusted to VM size) and `maxReplicaCount` to 20, so the two agents run out of room.
-- An alternative `scaledobject` overlay: worker `Deployment` in `loop` mode scaled by a KEDA **ScaledObject** (`minReplicaCount: 0`), to compare with ScaledJob. The docs should explain the trade-off: scaling down a Deployment can interrupt a worker mid-job, which the `SIGTERM` handling and grace period must cover, whereas ScaledJob lets each job run to completion.
-- Makefile targets: `install-keda`, `deploy`, `deploy-pending-demo`, `undeploy`, `watch`, `logs-worker`.
+- A `deploy/helm/values/pending-demo.yaml` values file, layered after `k3s.yaml`. It raises the worker CPU request (e.g., `cpu: "1"`, adjusted to VM size) and `maxReplicaCount` to 20, so the two agents run out of room.
+- An alternative `deploy/helm/values/scaledobject.yaml` values file (`worker.mode: scaledobject`). It runs the worker `Deployment` in `loop` mode, scaled by a KEDA **ScaledObject** (`minReplicaCount: 0`), for comparison with ScaledJob. In this mode the Deployment must not set `replicas`, because KEDA owns it. This connects back to the drift experiment in 3a. The docs should explain the trade-off: scaling down a Deployment can interrupt a worker mid-job, which the `SIGTERM` handling and grace period must cover, whereas ScaledJob lets each job run to completion.
+- Makefile targets: `install-keda`, `deploy`, `deploy-pending-demo`, `undeploy`, `watch`, `logs-worker`. `deploy` targets use `helm upgrade --install` with the right `-f` files, and `undeploy` uses `helm uninstall`.
 
 Experiments (`docs/stage-3b.md`), relating each back to the Stage 1 local scaler:
 
@@ -209,7 +231,7 @@ Experiments (`docs/stage-3b.md`), relating each back to the Stage 1 local scaler
 3. **Maximum respected:** 30 jobs with max 10 → never more than 10 at once; all 30 complete.
 4. **Spreading:** during experiment 3, workers run on both agent nodes.
 5. **Failures:** `FAIL_RATE=0.3` → every job completed or dead-lettered; none lost.
-6. **Capacity limit:** pending-demo overlay + 20 jobs → some pods `Pending`; `kubectl describe pod` shows insufficient CPU.
+6. **Capacity limit:** pending-demo values + 20 jobs → some pods `Pending`; `kubectl describe pod` shows insufficient CPU.
 7. **Interrupted worker:** delete a worker pod mid-job → job requeued and picked up again.
 8. **ScaledJob vs ScaledObject:** run experiment 3 in both modes and compare.
 
@@ -221,7 +243,7 @@ Experiments (`docs/stage-3b.md`), relating each back to the Stage 1 local scaler
 
 ### Scope
 
-- A `deploy/k8s/overlays/gke/` overlay. The base manifests must not need changes; if something in the base turns out to be k3s-specific, move it into the `k3s` overlay and explain why.
+- A `deploy/helm/values/gke.yaml` values file. The chart templates should not need changes. If something turns out to be k3s-specific, make it configurable through values, set it in `k3s.yaml`, and explain why.
 - Image pulls from Artifact Registry without key files (GKE node service account permissions, or Workload Identity if appropriate).
 - Ingress using GKE's ingress class or the Gateway API (pick one, explain the choice).
 - KEDA installed on GKE with the same script.
@@ -232,7 +254,7 @@ Experiments (`docs/stage-3b.md`), relating each back to the Stage 1 local scaler
 
 1. Repeat Stage 3b experiments 1–5 on GKE.
 2. Repeat the capacity-limit experiment: this time `Pending` pods should trigger the **cluster autoscaler** to add nodes, and after the queue drains, nodes should be removed (this can take around 10 minutes). Document the commands to watch it (`kubectl get nodes -w`, `kubectl get events`).
-3. Write down every difference between the k3s and GKE overlays in a short table in the docs.
+3. Write down every difference between the `k3s.yaml` and `gke.yaml` values files in a short table in the docs.
 4. Tear down the cluster.
 
 ---
@@ -252,7 +274,7 @@ kubernetes-test-app/
   deploy/                    # everything needed to package and run the app
     docker/                  # Stage 2: producer.Dockerfile, worker.Dockerfile
     compose/                 # Stage 2: docker-compose.yaml
-    k8s/                     # Stage 3–4: base/ and overlays/ (k3s, pending-demo, scaledobject, gke)
+    helm/                    # Stage 3–4: kubernetes-test-app/ chart + values/ (k3s, pending-demo, scaledobject, gke)
     scripts/                 # Stage 3–4: install-keda.sh, helper scripts
 ```
 
