@@ -3,3 +3,10 @@ __pycache__/
 .pytest_cache/
 # Never commit credentials (e.g. the Artifact Registry service-account key).
 *key*.json
+# Terraform: provider downloads and state (state lives in GCS, except
+# bootstrap's local one). .terraform.lock.hcl IS committed (pins providers).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log

@@ -20,18 +20,27 @@ WORKER_IMAGE   := $(REGISTRY)/kubernetes-test-app-worker:$(TAG)
 # Make these visible to the compose file's ${...} variables.
 export REGISTRY TAG TS_IP WORKERS PRODUCER_PORT
 
-# Kubernetes (Stage 3): the Helm release, its namespace, and the values files.
+# Kubernetes (Stages 3-4): the Helm release, its namespace, and the values files.
 # Later -f files override earlier ones. Extra flags: make deploy HELM_ARGS="--set config.failRate=0.3"
 NS         ?= kubernetes-test-app
 RELEASE    ?= kubernetes-test-app
 CHART      := deploy/helm/kubernetes-test-app
 VALUES     := deploy/helm/values
 K3S_VALUES := -f $(VALUES)/k3s.yaml
+GKE_VALUES := -f $(VALUES)/gke.yaml
 HELM_ARGS  ?=
+# Every target names its cluster (kubeconfig context) explicitly, because
+# `gcloud container clusters get-credentials` switches the CURRENT context to
+# GKE: without this, `make deploy` would then send k3s values to GKE.
+K3S_CONTEXT ?= default
+GKE_CONTEXT ?= gke_dns-chatbot-sb_us-central1-a_kta-gke
 HELM_DEPLOY = helm upgrade --install $(RELEASE) $(CHART) -n $(NS) --create-namespace
 
 .PHONY: help test build push up down \
-        install-keda deploy deploy-pending-demo deploy-scaledobject undeploy watch logs-worker
+        install-keda deploy deploy-pending-demo deploy-scaledobject undeploy watch logs-worker \
+        install-keda-gke install-tailscale-operator deploy-gke deploy-gke-pending-demo \
+        deploy-gke-scaledobject undeploy-gke watch-gke watch-nodes-gke logs-worker-gke \
+        tf-bootstrap tf-plan tf-apply gke-plan gke-up gke-down
 
 help:
 	@echo "make test   - run pytest in .venv"
@@ -46,6 +55,18 @@ help:
 	@echo "make undeploy            - helm uninstall (the namespace stays)"
 	@echo "make watch               - live view of ScaledJob/ScaledObject/HPA/Jobs/pods"
 	@echo "make logs-worker         - follow the logs of every worker pod, new ones too"
+	@echo "  (k3s targets use context $(K3S_CONTEXT); the -gke ones use $(GKE_CONTEXT))"
+	@echo "make install-keda-gke           - install KEDA into the GKE cluster"
+	@echo "make install-tailscale-operator - install the Tailscale operator into GKE (OAuth client needed)"
+	@echo "make deploy-gke                 - helm upgrade --install with gke.yaml (tailnet-only Ingress)"
+	@echo "make deploy-gke-pending-demo    - same + pending-demo.yaml (triggers the cluster autoscaler)"
+	@echo "make deploy-gke-scaledobject    - same + scaledobject.yaml"
+	@echo "make undeploy-gke / watch-gke / watch-nodes-gke / logs-worker-gke"
+	@echo "Terraform (GCP resources; every apply shows the plan and asks first):"
+	@echo "make tf-bootstrap   - create the state bucket (once)"
+	@echo "make tf-plan / tf-apply - APIs, registry, SAs, firewall, k3s VMs, nightly GKE delete"
+	@echo "make gke-plan / gke-up  - create (or re-create) the GKE cluster + get-credentials"
+	@echo "make gke-down           - destroy the GKE cluster"
 
 test:
 	.venv/bin/pytest
@@ -78,26 +99,94 @@ down:
 	done
 	@$(CONTAINER_TOOL) network rm $(PROJECT)_default >/dev/null 2>&1 || true
 
-# --- Kubernetes + KEDA (Stage 3b) -------------------------------------------
+# --- Kubernetes + KEDA on k3s (Stage 3b) ------------------------------------
 
 install-keda:
-	deploy/scripts/install-keda.sh
+	KUBE_CONTEXT=$(K3S_CONTEXT) deploy/scripts/install-keda.sh
 
 deploy:
-	$(HELM_DEPLOY) $(K3S_VALUES) $(HELM_ARGS)
+	$(HELM_DEPLOY) --kube-context $(K3S_CONTEXT) $(K3S_VALUES) $(HELM_ARGS)
 
 deploy-pending-demo:
-	$(HELM_DEPLOY) $(K3S_VALUES) -f $(VALUES)/pending-demo.yaml $(HELM_ARGS)
+	$(HELM_DEPLOY) --kube-context $(K3S_CONTEXT) $(K3S_VALUES) -f $(VALUES)/pending-demo.yaml $(HELM_ARGS)
 
 deploy-scaledobject:
-	$(HELM_DEPLOY) $(K3S_VALUES) -f $(VALUES)/scaledobject.yaml $(HELM_ARGS)
+	$(HELM_DEPLOY) --kube-context $(K3S_CONTEXT) $(K3S_VALUES) -f $(VALUES)/scaledobject.yaml $(HELM_ARGS)
 
 undeploy:
-	helm uninstall $(RELEASE) -n $(NS)
+	helm uninstall $(RELEASE) -n $(NS) --kube-context $(K3S_CONTEXT)
 
 # "No resources found" for kinds of the other mode is normal.
 watch:
-	watch -n1 kubectl -n $(NS) get scaledjob,scaledobject,hpa,jobs,pods -o wide
+	watch -n1 kubectl --context $(K3S_CONTEXT) -n $(NS) get scaledjob,scaledobject,hpa,jobs,pods -o wide
 
 logs-worker:
-	deploy/scripts/logs-worker.sh $(NS)
+	KUBE_CONTEXT=$(K3S_CONTEXT) deploy/scripts/logs-worker.sh $(NS)
+
+# --- GCP resources with Terraform (Stage 4) ---------------------------------
+# Three stacks under deploy/terraform/ (docs/stage-4.md "Provisioning with
+# Terraform"). No -auto-approve anywhere: apply prints the plan and waits
+# for "yes".
+TF := terraform -chdir=deploy/terraform
+
+tf-bootstrap:
+	$(TF)/bootstrap init -input=false
+	$(TF)/bootstrap apply
+
+tf-plan:
+	$(TF)/project init -input=false
+	$(TF)/project plan
+
+tf-apply:
+	$(TF)/project init -input=false
+	$(TF)/project apply
+
+gke-plan:
+	$(TF)/gke init -input=false
+	$(TF)/gke plan
+
+# Creates the cluster (or re-creates it after the nightly delete), then adds
+# it to ~/.kube/config. get-credentials makes GKE the CURRENT context, so
+# switch back to k3s (all targets pass --kube-context anyway).
+gke-up:
+	$(TF)/gke init -input=false
+	$(TF)/gke apply
+	gcloud container clusters get-credentials kta-gke --zone us-central1-a --project dns-chatbot-sb
+	kubectl config set-context $(GKE_CONTEXT) --namespace $(NS)
+	kubectl config use-context $(K3S_CONTEXT)
+
+gke-down:
+	$(TF)/gke init -input=false
+	$(TF)/gke destroy
+	-kubectl config delete-context $(GKE_CONTEXT)
+
+# --- GKE (Stage 4): same chart, gke.yaml instead of k3s.yaml ----------------
+# The cluster itself comes from Terraform (make gke-up).
+
+install-keda-gke:
+	KUBE_CONTEXT=$(GKE_CONTEXT) deploy/scripts/install-keda.sh
+
+install-tailscale-operator:
+	KUBE_CONTEXT=$(GKE_CONTEXT) deploy/scripts/install-tailscale-operator.sh
+
+deploy-gke:
+	$(HELM_DEPLOY) --kube-context $(GKE_CONTEXT) $(GKE_VALUES) $(HELM_ARGS)
+
+deploy-gke-pending-demo:
+	$(HELM_DEPLOY) --kube-context $(GKE_CONTEXT) $(GKE_VALUES) -f $(VALUES)/pending-demo.yaml $(HELM_ARGS)
+
+deploy-gke-scaledobject:
+	$(HELM_DEPLOY) --kube-context $(GKE_CONTEXT) $(GKE_VALUES) -f $(VALUES)/scaledobject.yaml $(HELM_ARGS)
+
+undeploy-gke:
+	helm uninstall $(RELEASE) -n $(NS) --kube-context $(GKE_CONTEXT)
+
+watch-gke:
+	watch -n1 kubectl --context $(GKE_CONTEXT) -n $(NS) get scaledjob,scaledobject,hpa,jobs,pods -o wide
+
+# Nodes appearing and disappearing (cluster autoscaler), with pod counts.
+watch-nodes-gke:
+	watch -n5 'kubectl --context $(GKE_CONTEXT) get nodes; echo; kubectl --context $(GKE_CONTEXT) -n $(NS) get pods -o wide'
+
+logs-worker-gke:
+	KUBE_CONTEXT=$(GKE_CONTEXT) deploy/scripts/logs-worker.sh $(NS)

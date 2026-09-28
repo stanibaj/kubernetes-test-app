@@ -88,6 +88,8 @@ kubectl get nodes -o wide     # gcp-srv-02 (control-plane), gcp-srv-03, gcp-srv-
 
 ### 4. Artifact Registry + pull credentials (done)
 
+> **Since Stage 4** the repository, `k3s-puller` and its reader permission are managed by Terraform (`deploy/terraform/project/`, imported, see `docs/stage-4.md`). The commands below are how they were first created. Don't re-run them; change the Terraform code instead. The key (last command) stays outside Terraform, because a key created by Terraform would be stored in its state.
+
 ```bash
 P=dns-chatbot-sb; R=us-central1; SA=k3s-puller@$P.iam.gserviceaccount.com
 gcloud artifacts repositories create kubernetes-test-app --repository-format=docker \

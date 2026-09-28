@@ -9,8 +9,8 @@ The full specification is in [`spec.md`](spec.md). The project is built in stage
 | 1 | Local Python app + a homemade "local scaler" | [docs/stage-1.md](docs/stage-1.md) |
 | 2 | Containers + Docker Compose | [docs/stage-2.md](docs/stage-2.md) |
 | 3a | k3s with a Helm chart, manual scaling | [docs/stage-3a.md](docs/stage-3a.md), [file-by-file manual](docs/stage-3a-manual.md) |
-| 3b | k3s with KEDA autoscaling | not yet |
-| 4 | GKE with node autoscaling | not yet |
+| 3b | k3s with KEDA autoscaling | [docs/stage-3b.md](docs/stage-3b.md) |
+| 4 | GKE with node autoscaling, reachable only over Tailscale | [docs/stage-4.md](docs/stage-4.md) |
 
 ## Quick start (Stage 1)
 
@@ -59,9 +59,22 @@ make watch                   # live view (other terminal: make logs-worker)
 # submit jobs on the page and watch workers appear and go back to 0; details in docs/stage-3b.md
 ```
 
+## Quick start (Stage 4: GKE) 💰
+
+```bash
+# once: Tailscale OAuth client + policy, then Terraform (you run every apply): docs/stage-4.md
+make tf-bootstrap tf-apply   # state bucket, then APIs/registry/SAs/firewall/k3s VMs (imported)/nightly delete
+make gke-up                  # terraform apply of the cluster + get-credentials
+make install-keda-gke install-tailscale-operator
+make deploy-gke              # gke.yaml: Tailscale Ingress, no pull secret, no public IP
+# → https://kubernetes-test-app.beefalo-fort.ts.net/   (tailnet only)
+make deploy-gke-pending-demo # Pending pods → the cluster autoscaler adds nodes (make watch-nodes-gke)
+make gke-down                # delete the cluster when done (a Cloud Scheduler job also deletes it nightly at 01:00)
+```
+
 ## Layout
 
 - `app/`: application code only (producer, worker, tools, tests). It knows nothing about Docker or Kubernetes.
-- `deploy/`: packaging and deployment. `docker/` holds the Dockerfiles (built from the repo root), `compose/` holds the Compose file, `helm/` holds the `kubernetes-test-app/` chart plus per-environment `values/` files, and `scripts/` holds `install-keda.sh` and `logs-worker.sh`.
-- `Makefile`: `test`, `build`, `push`, `up`, `down`; for k3s + KEDA `install-keda`, `deploy`, `deploy-pending-demo`, `deploy-scaledobject`, `undeploy`, `watch`, `logs-worker`.
+- `deploy/`: packaging and deployment. `docker/` holds the Dockerfiles (built from the repo root), `compose/` holds the Compose file, `helm/` holds the `kubernetes-test-app/` chart plus per-environment `values/` files, `scripts/` holds `install-keda.sh`, `install-tailscale-operator.sh` and `logs-worker.sh`, and `terraform/` holds the GCP infrastructure (`bootstrap/`, `project/`, `gke/`).
+- `Makefile`: `test`, `build`, `push`, `up`, `down`; for k3s + KEDA `install-keda`, `deploy`, `deploy-pending-demo`, `deploy-scaledobject`, `undeploy`, `watch`, `logs-worker`; the same with a `-gke` suffix for GKE, plus `install-tailscale-operator`. Every k8s target names its kube context (`K3S_CONTEXT`, `GKE_CONTEXT`).
 - `docs/`: one explanation per stage, plus [`cheatsheet.md`](docs/cheatsheet.md) (kubectl + Helm commands, grouped by the question they answer).

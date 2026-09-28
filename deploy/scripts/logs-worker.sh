@@ -7,10 +7,13 @@
 # starts a `kubectl logs -f` for each one. Ctrl+C stops everything.
 #
 #   deploy/scripts/logs-worker.sh [namespace]      (or: make logs-worker)
+#   KUBE_CONTEXT=<context> deploy/scripts/logs-worker.sh   (a named cluster)
 set -uo pipefail
 
 NS="${1:-kubernetes-test-app}"
 SELECTOR="app.kubernetes.io/component=worker"
+# Which cluster: empty = the current kubectl context.
+KUBECTL=(kubectl ${KUBE_CONTEXT:+--context "$KUBE_CONTEXT"} -n "$NS")
 
 # On Ctrl+C / exit, stop all background `kubectl logs` processes.
 trap 'kill $(jobs -p) 2>/dev/null; exit 0' INT TERM EXIT
@@ -20,12 +23,12 @@ while true; do
   # Skip Pending pods (not started yet: no logs to follow); they are picked
   # up on a later round, once running. Finished pods kept in the Job history
   # just print their log and end.
-  for pod in $(kubectl -n "$NS" get pods -l "$SELECTOR" \
+  for pod in $("${KUBECTL[@]}" get pods -l "$SELECTOR" \
                  --field-selector=status.phase!=Pending -o name 2>/dev/null); do
     if [[ -z "${following[$pod]:-}" ]]; then
       following[$pod]=1
       # --prefix adds "[pod/<name>/worker]" to every line.
-      kubectl -n "$NS" logs -f --prefix "$pod" &
+      "${KUBECTL[@]}" logs -f --prefix "$pod" &
     fi
   done
   sleep 2

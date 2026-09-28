@@ -11,7 +11,15 @@ Workers: KEDA ScaledObject scales Deployment "worker" between 0 and {{ .Values.w
 
 Open the web page:
 {{- if .Values.producer.ingress.enabled }}
+{{- if eq .Values.producer.ingress.className "tailscale" }}
+{{- /* The operator names the device after tls[0].hosts[0], or "<namespace>-<ingress name>" without tls. */}}
+{{- $tsName := printf "%s-producer" .Release.Namespace }}
+{{- with .Values.producer.ingress.tls }}{{ with (first .).hosts }}{{ $tsName = first . }}{{ end }}{{ end }}
+  Ingress:      https://{{ $tsName }}.<your-tailnet>.ts.net/  (tailnet only)
+                the real address: kubectl -n {{ .Release.Namespace }} get ingress producer
+{{- else }}
   Ingress:      http://{{ .Values.producer.ingress.host | default "<any-node-address>" }}/
+{{- end }}
 {{- end }}
   Port-forward: kubectl -n {{ .Release.Namespace }} port-forward --address "$(tailscale ip -4)" svc/producer 8080:{{ .Values.producer.service.port }}
                 then http://<that-ip>:8080/  (binds only to the Tailscale IP, never 0.0.0.0)

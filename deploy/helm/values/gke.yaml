@@ -1,0 +1,41 @@
+# Values for the GKE Standard cluster "kta-gke" (Stage 4; project
+# dns-chatbot-sb, zone us-central1-a, node pool autoscaling 1-4 nodes).
+# Layered over the chart's values.yaml, INSTEAD of k3s.yaml (not on top of it):
+#   helm upgrade --install kubernetes-test-app deploy/helm/kubernetes-test-app \
+#     --kube-context gke_dns-chatbot-sb_us-central1-a_kta-gke \
+#     -n kubernetes-test-app --create-namespace -f deploy/helm/values/gke.yaml
+# (or: make deploy-gke). Every difference from k3s.yaml is listed in a table
+# in docs/stage-4.md.
+
+image:
+  # Same Artifact Registry repo and images as on k3s: same project and region
+  # as the cluster, so pulls are free and nothing needs rebuilding.
+  registry: us-central1-docker.pkg.dev/dns-chatbot-sb/kubernetes-test-app
+  tag: "0.2.0"
+
+# No pull secret: GKE nodes pull from Artifact Registry as their node service
+# account (gke-nodes@..., which has roles/artifactregistry.reader on the
+# repo; see docs/stage-4.md). No key file exists anywhere.
+imagePullSecrets: []
+
+producer:
+  ingress:
+    enabled: true
+    # The Tailscale Kubernetes operator (deploy/scripts/install-tailscale-operator.sh),
+    # NOT GKE's "gce" class: that one creates a public HTTP load balancer.
+    # The operator starts a proxy pod that joins the tailnet as its own
+    # device and forwards to the producer's ClusterIP Service. Nothing gets a
+    # public IP, so the page is reachable only over Tailscale.
+    className: tailscale
+    # Must stay empty: the operator ignores rules whose host differs from the
+    # TLS host below. The name comes from tls instead.
+    host: ""
+    # Device name on the tailnet -> https://kubernetes-test-app.<tailnet>.ts.net/
+    # The operator gets the HTTPS certificate itself (no secretName).
+    tls:
+      - hosts:
+          - kubernetes-test-app
+
+worker:
+  # Same as k3s: KEDA starts one Job per waiting job (make install-keda-gke first).
+  mode: scaledjob

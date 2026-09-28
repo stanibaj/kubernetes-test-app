@@ -4,7 +4,7 @@ name: kubernetes-test-app
 description: Redis job queue with a producer web page and workers, for watching Kubernetes scale workers.
 type: application
 # Version of the CHART (its templates). Bump it when the templates change.
-version: 0.2.0
+version: 0.3.0
 # Version of the APP the chart deploys. Used as the default image tag when
 # image.tag is empty; environments normally set image.tag explicitly.
 appVersion: "dev"

@@ -66,6 +66,17 @@ producer:
     className: ""
     # Host name to match. Empty = any host.
     host: ""
+    # Standard Ingress TLS list, rendered as-is into spec.tls. Empty = no TLS.
+    # Most controllers need a secretName holding the certificate:
+    #   tls:
+    #     - hosts: [app.example.com]
+    #       secretName: app-tls
+    # The Tailscale operator (ingressClassName "tailscale", Stage 4 on GKE)
+    # needs no secret: it takes the first label of hosts[0] as the device's
+    # MagicDNS name and gets a certificate itself:
+    #   tls:
+    #     - hosts: [kubernetes-test-app]   # -> kubernetes-test-app.<tailnet>.ts.net
+    tls: []
   resources:
     requests:
       cpu: 50m

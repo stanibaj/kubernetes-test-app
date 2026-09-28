@@ -225,6 +225,25 @@ kubectl get jobs --sort-by=.metadata.creationTimestamp       # DURATION: real wo
 
 ---
 
+## 11c. Two clusters, and nodes that come and go (Stage 4)
+
+```bash
+kubectl config get-contexts                       # * = the current one; default = k3s, gke_… = GKE
+kubectl config current-context                    # check BEFORE any command without --context
+G="--context gke_dns-chatbot-sb_us-central1-a_kta-gke"
+kubectl $G get nodes -w                           # nodes being added/removed by the cluster autoscaler
+kubectl $G get events -A -w --field-selector reason=TriggeredScaleUp    # "pod triggered scale-up"
+kubectl $G get events -A | grep -i -E 'scale ?down|NoScaleDown|NotTriggerScaleUp'
+kubectl $G describe node <node> | sed -n '/Allocated resources/,/Events/p'   # requests vs allocatable
+kubectl $G get ingress producer                   # ADDRESS = the tailnet name (Tailscale operator)
+kubectl $G -n tailscale get pods                  # operator + one ts-producer-… proxy pod
+kubectl $G get svc -A | grep -E 'LoadBalancer|NodePort' || echo "nothing public"
+```
+
+**Check an assumption:** "the autoscaler adds a node because the node is busy". It doesn't. It adds one only when a pod is **Pending** and would fit on a new node, based on **requests**. Compare `describe node` → *Allocated resources* with `kubectl top node` (actual use).
+
+---
+
 ## 12. Learning the API itself
 
 ```bash

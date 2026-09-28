@@ -20,6 +20,12 @@ spec:
     metadata:
       labels:
         {{- include "kubernetes-test-app.labels" (dict "ctx" $ "component" "redis") | nindent 8 }}
+      annotations:
+        # For a cluster autoscaler (GKE, Stage 4): never remove the node this
+        # pod runs on to save money. The queue lives only in this pod's
+        # emptyDir, so moving Redis to another node would lose every job.
+        # Clusters without an autoscaler (k3s) simply ignore it.
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     spec:
       # Don't inject docker-link-style variables such as REDIS_PORT=tcp://...
       # for every Service in the namespace (see docs/stage-3a.md).

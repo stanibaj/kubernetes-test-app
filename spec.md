@@ -19,7 +19,7 @@ The project is built in **four stages**, each building on the previous one:
 - **Stop at the end of each stage** and let the user run and verify it before continuing.
 - **Explain as you go.** The user is learning. At the end of each stage, write `docs/stage-N.md` explaining what was built, the concepts involved, why each change was needed, and how to run the stage's experiments. When a later stage changes earlier code, explain why the change was necessary.
 - **Keep the code simple, readable, and commented.** The app itself is intentionally trivial (workers "process" a job by sleeping); the interesting part is how it runs and scales.
-- **Never create cloud resources or run commands that cost money.** For Stage 4, write the `gcloud` commands in the docs for the user to run themselves.
+- **Never create cloud resources or run commands that cost money.** GCP resources are described as Terraform code under `deploy/terraform/`. The implementer writes it and may run `terraform fmt`, `validate` and `plan` (read-only); the user runs every `terraform apply`.
 
 ## 2. The application (shared by all stages)
 
@@ -247,7 +247,9 @@ Experiments (`docs/stage-3b.md`), relating each back to the Stage 1 local scaler
 - Image pulls from Artifact Registry without key files (GKE node service account permissions, or Workload Identity if appropriate).
 - Ingress using GKE's ingress class or the Gateway API (pick one, explain the choice).
 - KEDA installed on GKE with the same script.
-- Documentation (`docs/stage-4.md`) with the `gcloud` commands for the user to run: creating a small GKE Standard cluster with a node pool that has autoscaling enabled (e.g., min 1, max 4 nodes), getting credentials, creating the Artifact Registry repository if needed, and deleting everything afterwards.
+- Terraform under `deploy/terraform/` for every GCP resource the project uses: a small GKE Standard cluster with a node pool that has autoscaling enabled (e.g., min 1, max 4 nodes), the Artifact Registry repository and service accounts, and the resources created by hand in Stage 3 (imported into Terraform state, not recreated). Documentation (`docs/stage-4.md`) explains the stacks, how to read a plan with imports, getting credentials, and deleting everything afterwards.
+- The app is reachable only over Tailscale on GKE too (Tailscale Kubernetes operator Ingress; no public load balancer).
+- A Cloud Scheduler job deletes the cluster nightly, so a forgotten cluster costs at most a day.
 - A clear cost warning at the top of the docs, and a note about GKE Autopilot as an alternative (and why resource requests on every container matter there).
 
 ### Experiments
@@ -275,11 +277,12 @@ kubernetes-test-app/
     docker/                  # Stage 2: producer.Dockerfile, worker.Dockerfile
     compose/                 # Stage 2: docker-compose.yaml
     helm/                    # Stage 3–4: kubernetes-test-app/ chart + values/ (k3s, pending-demo, scaledobject, gke)
-    scripts/                 # Stage 3–4: install-keda.sh, helper scripts
+    scripts/                 # Stage 3–4: install-keda.sh, install-tailscale-operator.sh, helper scripts
+    terraform/               # Stage 4: bootstrap/ (state bucket), project/ (long-lived GCP), gke/ (the cluster)
 ```
 
 The rule of thumb: if a file would still make sense with no containers or Kubernetes at all, it belongs in `app/`; if it only exists to build, ship, or run the app somewhere, it belongs in `deploy/`.
 
 ## 8. Non-goals
 
-No authentication, no persistent Redis storage, no high availability, no metrics stack (Prometheus/Grafana), no automated cloud provisioning.
+No authentication, no persistent Redis storage, no high availability, no metrics stack (Prometheus/Grafana). Cloud resources are provisioned with Terraform, but applied by hand (no CI/CD pipeline for infrastructure).

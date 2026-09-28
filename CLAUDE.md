@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A learning project: a trivial Redis-backed job queue (producer + workers) used to watch Kubernetes scale workers based on queue length. **`spec.md` is the source of truth** for requirements, Redis data model, env vars, API, experiments, and the final repo layout. Read the relevant section before implementing anything.
 
-The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manual scaling, 3b: KEDA autoscaling, 4: GKE). **Stages 1, 2, 3a and 3b are implemented** (see `docs/stage-*.md`); nothing from Stage 4 exists yet. KEDA 2.21.0 is installed on k3s (namespace `keda`), and `k3s.yaml` sets `worker.mode: scaledjob`.
+The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manual scaling, 3b: KEDA autoscaling, 4: GKE). **All stages (1, 2, 3a, 3b, 4) are implemented** (see `docs/stage-*.md`). KEDA 2.21.0 is installed on k3s (namespace `keda`), and `k3s.yaml` sets `worker.mode: scaledjob`. Stage 4 targets GKE cluster `kta-gke` (zonal `us-central1-a`, e2-standard-2 Spot, autoscaling 1–4). It comes from Terraform (`make gke-up`), and a Cloud Scheduler job (`kta-gke-nightly-delete`) deletes it nightly at 01:00 Europe/Berlin, so it often doesn't exist.
 
 ## Working agreement (from spec.md §1 — follow strictly)
 
@@ -14,13 +14,13 @@ The project is built in stages (1: local Python, 2: Docker Compose, 3a: k3s manu
 - **Stop at the end of each stage** so the user can run and verify it.
 - **Write `docs/stage-N.md`** (`stage-3a.md` / `stage-3b.md` for Stage 3) at the end of each stage: what was built, concepts, why each change was needed, and how to run the experiments. The user is learning, so explain as you go. When a later stage changes earlier code, explain why.
 - **Inspect before creating.** Don't overwrite or delete existing files without asking; mention conflicts.
-- **Never create cloud resources or run commands that cost money.** For GKE, write the `gcloud` commands in the docs for the user to run.
+- **Never create cloud resources or run commands that cost money.** GCP resources are Terraform code under `deploy/terraform/`. Claude writes it and runs only `terraform fmt`/`validate`/`plan` (read-only); **the user runs every `apply`** (Makefile targets never pass `-auto-approve`). Don't create GCP resources with gcloud either; gcloud is only for read-only checks and `get-credentials`.
 - Keep code simple, readable, and commented.
 
 ## Architecture boundaries
 
 - `app/` = plain application code (producer, worker, `tools/local_scaler.py`, tests). It must know nothing about Docker or Kubernetes. All config comes from environment variables with local defaults.
-- `deploy/` = everything for packaging/running: `docker/` (Dockerfiles, built with the **repo root** as context), `compose/`, `helm/` (the `kubernetes-test-app/` chart + `values/` files for `k3s`, `pending-demo`, `scaledobject`, `gke`, layered with multiple `-f`), `scripts/`.
+- `deploy/` = everything for packaging/running: `docker/` (Dockerfiles, built with the **repo root** as context), `compose/`, `helm/` (the `kubernetes-test-app/` chart + `values/` files for `k3s`, `pending-demo`, `scaledobject`, `gke`, layered with multiple `-f`), `scripts/`, `terraform/` (GCP infrastructure, see below).
 - Rule of thumb: if a file still makes sense with no containers or Kubernetes, it belongs in `app/`.
 - The chart templates must stay platform-neutral. Use the standard `Ingress` with a configurable `ingressClassName` and no Traefik CRDs. Anything k3s- or GKE-specific is a value set in that environment's values file. The chart never installs KEDA CRDs and renders KEDA resources only when `worker.mode` selects them. The namespace comes from `--create-namespace`, not a template.
 
@@ -55,14 +55,23 @@ python app/tools/local_scaler.py --max 5                  # starts once-workers 
 
 Components are script directories, not packages. Tests import `app`, `worker` and `local_scaler` directly via `pytest.ini`'s `pythonpath`. The producer's Redis client is injected through the `get_redis` dependency, and tests override it with fakeredis. `process_job` takes injectable `sleep`/`rand`. `fakeredis.TcpFakeServer` can stand in for a real Redis in end-to-end smoke tests.
 
-Makefile targets: `build`, `push`, `up`, `down`, `test` (images parameterized by `REGISTRY` and `TAG`), and for k3s `install-keda`, `deploy`, `deploy-pending-demo`, `deploy-scaledobject`, `undeploy`, `watch`, `logs-worker` (deploy = `helm upgrade --install` with the `-f` files; extra flags via `HELM_ARGS`). Helm v4.3.0 and kubectl v1.36 are in `~/.local/bin`. `~/.kube/config` points at the k3s API over the tailnet (`https://100.112.126.75:6443`). Helm 4 uses server-side apply, so drift from `kubectl scale` makes `helm upgrade` fail with a conflict unless `--force-conflicts` is passed.
+Makefile targets: `build`, `push`, `up`, `down`, `test` (images parameterized by `REGISTRY` and `TAG`), and for k3s `install-keda`, `deploy`, `deploy-pending-demo`, `deploy-scaledobject`, `undeploy`, `watch`, `logs-worker` (deploy = `helm upgrade --install` with the `-f` files; extra flags via `HELM_ARGS`). The GKE equivalents have a `-gke` suffix, plus `install-tailscale-operator` and `watch-nodes-gke`. Every k8s target passes an explicit context (`K3S_CONTEXT=default`, `GKE_CONTEXT=gke_dns-chatbot-sb_us-central1-a_kta-gke`), because `get-credentials` switches the current context. The scripts honor `KUBE_CONTEXT`. Helm v4.3.0 and kubectl v1.36 are in `~/.local/bin`. `~/.kube/config` points at the k3s API over the tailnet (`https://100.112.126.75:6443`). Helm 4 uses server-side apply, so drift from `kubectl scale` makes `helm upgrade` fail with a conflict unless `--force-conflicts` is passed.
 
 ## Target environments
 
 - k3s v1.36: self-managed on 3 GCE VMs in project `dns-chatbot-sb`, `us-central1-a` (server `gcp-srv-02`, agents `gcp-srv-03`/`04`), linux/amd64, with Traefik available. Images live in `us-central1-docker.pkg.dev/dns-chatbot-sb/kubernetes-test-app`. Pulls use the `artifact-registry` imagePullSecret, made from the `k3s-puller` SA key at `~/.config/kubernetes-test-app/` (never commit it).
 - The app must be reachable **only over Tailscale**. The GCP firewall rule `deny-ingress-tailscale-only` blocks the nodes' public IPs. Chart Services stay ClusterIP, and the Ingress host is the tailnet MagicDNS name.
-- GKE Standard with node-pool autoscaling (Stage 4).
+- GKE Standard with node-pool autoscaling (Stage 4, `gke.yaml`), also **tailnet-only**. The Ingress uses `ingressClassName: tailscale` (Tailscale operator 1.102.4, `deploy/scripts/install-tailscale-operator.sh`, OAuth creds in `~/.config/kubernetes-test-app/tailscale-oauth.env`), never `gce`/Gateway, because those create public LBs. The operator names the device from `producer.ingress.tls[0].hosts[0]` and ignores rules whose `host` differs, so `host` stays empty there. Never add the `tailscale.com/funnel` annotation. There are no LoadBalancer/NodePort Services. Nodes pull as SA `gke-nodes` (no pull secret). Don't put the `tailscale-only` tag on GKE nodes: that rule denies all traffic, internal traffic included.
 
 ## Non-goals
 
-No auth, persistent Redis, HA, Prometheus/Grafana, or automated cloud provisioning.
+No auth, persistent Redis, HA, Prometheus/Grafana, or CI/CD for infrastructure (Terraform is applied by hand).
+
+## Terraform (`deploy/terraform/`, Terraform 1.16.4 in `~/.local/bin`, google provider `~> 8.4`)
+
+- Three stacks, split by lifetime: `bootstrap/` (state bucket `dns-chatbot-sb-tfstate`, local state), `project/` (long-lived: APIs, AR repo + IAM, SAs `k3s-puller`/`gke-nodes`/`gke-reaper`, firewall rules, k3s VMs + `k3s-lab-schedule`, the nightly delete job), `gke/` (only the cluster + node pool; recreated after each nightly delete). State in GCS, prefix `kubernetes-test-app/<stack>`. Targets: `tf-bootstrap`, `tf-plan`, `tf-apply`, `gke-plan`, `gke-up`, `gke-down`.
+- Pre-existing resources are adopted with `import` blocks (`project/imports.tf`). An imported resource must plan with **0 changes**; if not, fix the code to match reality, never the other way round. The one known exception: on import the VMs show `+` for `labels`/`terraform_labels` (provider v5+ leaves `labels` empty on import; `effective_labels` is unchanged, so the apply is a no-op). The first plan also prints the VMs' startup script, so never save or paste that plan output.
+- The k3s VMs (`gcp-srv-02..04`) have `prevent_destroy` and `ignore_changes` on `metadata` (the startup script holds a secret: never read it or put it in code) and on `boot_disk[0].initialize_params`. They are stopped nightly at 23:00 Europe/Prague by `k3s-lab-schedule`, so the k3s API is often unreachable. Start them with `gcloud compute instances start gcp-srv-02 gcp-srv-03 gcp-srv-04 --zone us-central1-a`.
+- `dns-chatbot-sb` is a shared project: only non-authoritative IAM (`*_iam_member`), never `*_iam_binding`/`*_iam_policy`; `google_project_service` always has `disable_on_destroy = false`. Never `terraform destroy` the `project/` stack.
+- Secrets (SA keys, the Tailscale OAuth client) are never created by Terraform, because they would land in the state.
+- The Tailscale policy lives in `~/homelab-iac/tailscale/policy.hujson` (applied by that repo's CI), not here.
