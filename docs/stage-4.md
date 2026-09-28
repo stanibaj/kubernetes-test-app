@@ -220,7 +220,7 @@ The tailnet policy is managed as code in `~/homelab-iac/tailscale/policy.hujson`
 ],
 ```
 
-Your own (untagged) devices already reach everything through the policy's first grant. The new grant is for vps-01, which is a tagged device.
+Your own (untagged) devices already reach everything through the policy's first grant. The new grant is for vps-01, which is a tagged device. It must really **carry** `tag:vps-01` (check with `tailscale status --self --json | jq .Self.Tags`, and set it in homelab-iac `inventory/host_vars/vps-01.yml`). A tag listed in `tagOwners` isn't necessarily on any device. If vps-01 lacks it, the Ingress gets its address but vps-01 can't resolve or reach it: `tailscale status` doesn't list the device, and curl times out.
 
 **`tag:k8s` must be owned by `tag:k8s-operator`, not by your user.** The operator logs in *as* `tag:k8s-operator`, and a tagged identity can only put tags on devices if it owns those tags. With the wrong owner, the Ingress never gets an ADDRESS, no `ts-producer-…-0` pod appears, and the operator logs `failed to create or get API key secret: requested tags [tag:k8s] are invalid or not permitted (400)` (`kubectl $G -n tailscale logs deploy/operator`). The operator keeps retrying, so once the policy is fixed it recovers by itself within a few minutes.
 
@@ -319,7 +319,8 @@ Nodes pull images with no pull secret. If a pod shows `ImagePullBackOff` with `4
 ### Check that it is tailnet-only
 
 ```bash
-curl -sI https://kubernetes-test-app.beefalo-fort.ts.net/ | head -1                # from vps-01: HTTP/2 200
+curl -s -o /dev/null -w '%{http_code}\n' https://kubernetes-test-app.beefalo-fort.ts.net/   # from vps-01: 200
+# (not `curl -I`: HEAD gets 405, because FastAPI's @app.get routes answer only GET)
 tailscale status | grep kubernetes-test-app                                       # the proxy is a tailnet device
 kubectl $G get svc -A | grep -E 'LoadBalancer|NodePort' || echo "no public Services"
 kubectl $G get svc -A -o jsonpath='{range .items[*]}{.status.loadBalancer.ingress}{end}'; echo   # empty
